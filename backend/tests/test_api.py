@@ -47,10 +47,11 @@ def test_players(client):
     assert len(d["similar"]) == 8 and "percentiles" in d["profile"]
 
 
-def test_websocket_live(client):
-    with client.websocket_connect("/ws/live?home=1&away=2&speed=60&seed=1") as ws:
+def test_websocket_replay(client):
+    m = client.get("/api/matches", params={"matchday": 5}).json()[0]
+    with client.websocket_connect(f"/ws/live?match_id={m['id']}&speed=60") as ws:
         first = ws.receive_json()
-        assert first["type"] == "kickoff"
+        assert first["type"] == "kickoff" and first["home_id"] == m["home_id"]
         last = None
         while True:
             msg = ws.receive_json()
@@ -60,6 +61,21 @@ def test_websocket_live(client):
             p = msg["probs"]
             assert abs(p["home"] + p["draw"] + p["away"] - 1) < 1e-6
         assert last["minute"] >= 90
+        assert msg["score"] == [m["home_goals"], m["away_goals"]]
+
+
+def test_simulate_from_past_matchday(client):
+    s = client.get("/api/simulate/season", params={"n": 500, "as_of": 6}).json()
+    assert s["as_of"] == 6 and s["remaining_fixtures"] > 0
+    assert abs(sum(t["title"] for t in s["teams"]) - 1) < 1e-6
+
+
+def test_halfway_and_title_race(client):
+    h = client.get("/api/models/halfway").json()
+    assert set(h["summary"]) == {"table_ppg", "dixon_coles", "xg_poisson"}
+    r = client.get("/api/simulate/title-race").json()
+    for md in range(len(r["teams"][0]["series"])):
+        assert abs(sum(t["series"][md]["title"] for t in r["teams"]) - 1) < 1e-6
 
 
 def test_stale_service_worker_kill_switch(client):

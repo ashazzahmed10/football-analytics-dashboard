@@ -42,9 +42,9 @@ CREATE TABLE teams (id INTEGER PRIMARY KEY, name TEXT, short TEXT,
     true_attack REAL, true_defence REAL, directness REAL);
 CREATE TABLE players (id INTEGER PRIMARY KEY, team_id INTEGER, name TEXT, position TEXT,
     shirt INTEGER, age INTEGER, starter INTEGER, ax REAL, ay REAL,
-    passing REAL, finishing REAL, dribbling REAL, defending REAL);
+    passing REAL, finishing REAL, dribbling REAL, defending REAL, country TEXT);
 CREATE TABLE matches (id INTEGER PRIMARY KEY, matchday INTEGER, home_id INTEGER, away_id INTEGER,
-    home_goals INTEGER, away_goals INTEGER, played INTEGER, seed INTEGER);
+    home_goals INTEGER, away_goals INTEGER, played INTEGER, seed INTEGER, date TEXT);
 CREATE TABLE appearances (match_id INTEGER, player_id INTEGER, team_id INTEGER, minutes INTEGER);
 CREATE TABLE events (id INTEGER PRIMARY KEY, match_id INTEGER, team_id INTEGER, player_id INTEGER,
     type TEXT, second INTEGER, x REAL, y REAL, end_x REAL, end_y REAL, outcome TEXT,
@@ -52,6 +52,7 @@ CREATE TABLE events (id INTEGER PRIMARY KEY, match_id INTEGER, team_id INTEGER, 
 CREATE INDEX ev_match ON events(match_id);
 CREATE INDEX ev_type ON events(type);
 CREATE INDEX ev_player ON events(player_id);
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
 """
 
 
@@ -129,8 +130,12 @@ def build_database(path: Path, seed: int = 11, played_matchdays: int = PLAYED_MA
     con = sqlite3.connect(path)
     con.executescript(SCHEMA)
     con.executemany("INSERT INTO teams VALUES (:id,:name,:short,:true_attack,:true_defence,:directness)", teams)
-    con.executemany("INSERT INTO players VALUES (:id,:team_id,:name,:position,:shirt,:age,:starter,:ax,:ay,"
+    con.executemany("INSERT INTO players (id,team_id,name,position,shirt,age,starter,ax,ay,passing,finishing,"
+                    "dribbling,defending) VALUES (:id,:team_id,:name,:position,:shirt,:age,:starter,:ax,:ay,"
                     ":passing,:finishing,:dribbling,:defending)", players)
+    con.executemany("INSERT INTO meta VALUES (?,?)", [("source", "synthetic"),
+                                                      ("competition", "PitchIQ Synthetic League"),
+                                                      ("attribution", "Simulated by the PitchIQ match engine")])
 
     schedule = round_robin(len(teams))
     mid = 0
@@ -141,7 +146,7 @@ def build_database(path: Path, seed: int = 11, played_matchdays: int = PLAYED_MA
             home, away = teams[h], teams[a]
             mseed = rng.randrange(1 << 30)
             if md > played_matchdays:
-                con.execute("INSERT INTO matches VALUES (?,?,?,?,?,?,?,?)",
+                con.execute("INSERT INTO matches (id,matchday,home_id,away_id,home_goals,away_goals,played,seed) VALUES (?,?,?,?,?,?,?,?)",
                             (mid, md, home["id"], away["id"], None, None, 0, mseed))
                 continue
             mrng = random.Random(mseed)
@@ -152,7 +157,7 @@ def build_database(path: Path, seed: int = 11, played_matchdays: int = PLAYED_MA
                                 None if e.end_x is None else round(e.end_x, 2),
                                 None if e.end_y is None else round(e.end_y, 2), e.outcome, e.receiver_id,
                                 e.possession, e.body_part, e.situation, e.true_xg))
-            con.execute("INSERT INTO matches VALUES (?,?,?,?,?,?,?,?)",
+            con.execute("INSERT INTO matches (id,matchday,home_id,away_id,home_goals,away_goals,played,seed) VALUES (?,?,?,?,?,?,?,?)",
                         (mid, md, home["id"], away["id"], sim.score[hs.id], sim.score[as_.id], 1, mseed))
             mins = sim.end_second // 60
             con.executemany("INSERT INTO appearances VALUES (?,?,?,?)",

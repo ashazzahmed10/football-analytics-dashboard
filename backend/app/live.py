@@ -1,12 +1,13 @@
 """
-Live match centre: streams a simulated match over a WebSocket, minute by minute,
-with an in-play win-probability model that updates in real time.
+Live match centre: replays a real match over a WebSocket, minute by minute, with an
+in-play win-probability model that updates as the events arrive.
 
 In-play model
 -------------
-Pre-match scoring rates (lambda_home, lambda_away) come from the Dixon-Coles model.
-During the game we treat each team's true rate as uncertain and update it with a
-Gamma-Poisson (conjugate) Bayesian update using the *xG it has generated so far*:
+Pre-match scoring rates (lambda_home, lambda_away) come from a Dixon-Coles model fitted
+ONLY on matchdays before this match (no look-ahead). During the game each team's true
+rate is uncertain and is updated with a Gamma-Poisson (conjugate) Bayesian step using
+the *xG it has generated so far*:
 
     prior      rate ~ Gamma(alpha = c * lambda, beta = c)          (c = prior strength in matches)
     posterior  E[rate] = (c * lambda + xG_so_far) / (c + t)        (t = fraction of match played)
@@ -16,18 +17,12 @@ convolution of the current score with the remaining-goal distributions.
 """
 from __future__ import annotations
 
-from typing import Optional
-
 import asyncio
-import random
-import sqlite3
 
 import numpy as np
 from scipy.stats import poisson
 
-from .data.engine import MATCH_SECONDS, MatchSimulator
-from .data.league import load_team_state
-
+MATCH_MINUTES = 90
 PRIOR_STRENGTH = 1.5
 
 
@@ -44,62 +39,63 @@ def in_play_probs(score_h, score_a, lam_h, lam_a, xg_h, xg_a, t):
             "away": float(M[diff < 0].sum()), "rate_home": rate_h, "rate_away": rate_a}
 
 
-async def stream_match(ws, platform, home: int, away: int, speed: float = 4.0, seed: Optional[int] = None):
-    """speed = simulated match-minutes per real second."""
-    rng = random.Random(seed if seed is not None else random.randrange(1 << 30))
-    con = sqlite3.connect(platform.db_path)
-    hs, as_ = load_team_state(con, home, rng), load_team_state(con, away, rng)
-    con.close()
-    names = {p.id: p.name for p in hs.lineup + as_.lineup}
-    lam_h, lam_a = platform.dc.rates(home, away)
-    sim = MatchSimulator(hs, as_, rng)
+async def stream_replay(ws, platform, match_id: int, speed: float = 4.0):
+    """speed = match-minutes per real second."""
+    m = platform.matches.loc[match_id]
+    home, away = int(m.home_id), int(m.away_id)
+    ev = platform.events[platform.events.match_id == match_id].sort_values(["second", "id"])
+    names = platform.players["name"].to_dict()
+    lam_h, lam_a, prior_src = platform.prematch_rates(match_id)
 
-    await ws.send_json({"type": "kickoff", "home": platform.team_name(home), "away": platform.team_name(away),
-                        "home_id": home, "away_id": away, "lambda": [lam_h, lam_a],
-                        "lineups": {"home": [{"id": p.id, "name": p.name, "pos": p.position} for p in hs.lineup],
-                                    "away": [{"id": p.id, "name": p.name, "pos": p.position} for p in as_.lineup]},
+    await ws.send_json({"type": "kickoff", "match_id": int(match_id), "matchday": int(m.matchday),
+                        "date": m.get("date") if isinstance(m.get("date"), str) else None, "home": platform.team_name(home), "away": platform.team_name(away),
+                        "home_id": home, "away_id": away, "lambda": [lam_h, lam_a], "prior": prior_src,
+                        "final_score": [int(m.home_goals), int(m.away_goals)],
                         "probs": in_play_probs(0, 0, lam_h, lam_a, 0, 0, 0)})
 
-    state = {"xg": {home: 0.0, away: 0.0}, "passes": {home: 0, away: 0}, "shots": {home: 0, away: 0},
-             "xt": {home: 0.0, away: 0.0}}
-    minute, buffer = 0, []
+    score = {home: 0, away: 0}
+    xg = {home: 0.0, away: 0.0}
+    xt = {home: 0.0, away: 0.0}
+    passes = {home: 0, away: 0}
+    shots = {home: 0, away: 0}
     delay = 1.0 / max(speed, 0.1)
+    by_minute = ev.groupby(ev.second // 60)
+    last_minute = int(ev.second.max() // 60) if len(ev) else 90
 
-    async def flush(m):
-        t = min(m * 60 / MATCH_SECONDS, 1.0)
-        probs = in_play_probs(sim.score[home], sim.score[away], lam_h, lam_a,
-                              state["xg"][home], state["xg"][away], t)
-        tot = state["passes"][home] + state["passes"][away] or 1
-        await ws.send_json({"type": "tick", "minute": m, "score": [sim.score[home], sim.score[away]],
-                            "xg": [round(state["xg"][home], 3), round(state["xg"][away], 3)],
-                            "xt": [round(state["xt"][home], 3), round(state["xt"][away], 3)],
-                            "shots": [state["shots"][home], state["shots"][away]],
-                            "possession": [round(state["passes"][home] / tot * 100, 1),
-                                           round(state["passes"][away] / tot * 100, 1)],
-                            "probs": probs, "events": buffer})
+    for minute in range(0, last_minute + 1):
+        feed = []
+        if minute in by_minute.groups:
+            for e in by_minute.get_group(minute).itertuples():
+                tid = int(e.team_id)
+                if tid not in score:
+                    continue
+                if e.type == "pass":
+                    passes[tid] += 1
+                if e.type in ("pass", "carry") and e.outcome == "success" and not np.isnan(e.xt):
+                    xt[tid] += max(float(e.xt), 0)
+                    if e.xt > 0.03:
+                        feed.append({"kind": "threat", "team_id": tid, "player": names.get(e.player_id, ""),
+                                     "x": e.x, "y": e.y, "end_x": e.end_x, "end_y": e.end_y, "xt": round(float(e.xt), 3)})
+                if e.type == "shot":
+                    xg[tid] += float(e.xg)
+                    shots[tid] += 1
+                    if e.outcome == "goal":
+                        score[tid] += 1
+                    feed.append({"kind": "shot", "team_id": tid, "player": names.get(e.player_id, ""),
+                                 "x": e.x, "y": e.y, "xg": round(float(e.xg), 3), "outcome": e.outcome,
+                                 "situation": e.situation, "body_part": e.body_part, "second": int(e.second)})
+        t = min(minute / MATCH_MINUTES, 1.0)
+        probs = in_play_probs(score[home], score[away], lam_h, lam_a, xg[home], xg[away], t)
+        tot = passes[home] + passes[away] or 1
+        await ws.send_json({"type": "tick", "minute": minute, "score": [score[home], score[away]],
+                            "xg": [round(xg[home], 3), round(xg[away], 3)],
+                            "xt": [round(xt[home], 3), round(xt[away], 3)],
+                            "shots": [shots[home], shots[away]],
+                            "possession": [round(passes[home] / tot * 100, 1), round(passes[away] / tot * 100, 1)],
+                            "probs": probs, "events": feed})
         await asyncio.sleep(delay)
 
-    for ev in sim.run():
-        m = ev.second // 60
-        while m > minute:
-            await flush(minute)
-            buffer = []
-            minute += 1
-        if ev.type == "pass":
-            state["passes"][ev.team_id] += 1
-        if ev.type in ("pass", "carry") and ev.outcome == "success" and ev.end_x is not None:
-            v = float(platform.xt.action_values([ev.x], [ev.y], [ev.end_x], [ev.end_y])[0])
-            state["xt"][ev.team_id] += max(v, 0)
-            if v > 0.03:
-                buffer.append({"kind": "threat", "team_id": ev.team_id, "player": names[ev.player_id],
-                               "x": ev.x, "y": ev.y, "end_x": ev.end_x, "end_y": ev.end_y, "xt": round(v, 3)})
-        if ev.type == "shot":
-            xg = float(platform.xg.predict([ev.x], [ev.y], [ev.body_part == "head"], [ev.situation])[0])
-            state["xg"][ev.team_id] += xg
-            state["shots"][ev.team_id] += 1
-            buffer.append({"kind": "shot", "team_id": ev.team_id, "player": names[ev.player_id],
-                           "x": ev.x, "y": ev.y, "xg": round(xg, 3), "outcome": ev.outcome,
-                           "situation": ev.situation, "body_part": ev.body_part, "second": ev.second})
-    await flush(minute)
-    await ws.send_json({"type": "fulltime", "score": [sim.score[home], sim.score[away]],
-                        "xg": [round(state["xg"][home], 2), round(state["xg"][away], 2)]})
+    # Own goals are not shots, so trust the official score at full time.
+    await ws.send_json({"type": "fulltime", "score": [int(m.home_goals), int(m.away_goals)],
+                        "xg": [round(xg[home], 2), round(xg[away], 2)],
+                        "own_goals": [int(m.home_goals) - score[home], int(m.away_goals) - score[away]]})

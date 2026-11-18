@@ -3,16 +3,17 @@ import { api, liveSocket } from "../api.js";
 import { AWAY, HOME, css, fmt, hideTip, legendHTML, pitch, showTip, tipRows } from "../charts.js";
 
 export async function render(el) {
-  const [teams, table] = await Promise.all([api("/api/teams"), api("/api/league/table")]);
-  const opts = (sel) => teams.map((t) => `<option value="${t.id}" ${t.id === sel ? "selected" : ""}>${t.name}</option>`).join("");
+  const all = (await api("/api/matches")).filter((m) => m.played);
+  const mds = [...new Set(all.map((m) => m.matchday))].sort((a, b) => a - b);
+  // default: the season's biggest xG shoot-out
+  const pick = [...all].sort((a, b) => (b.home_xg + b.away_xg) - (a.home_xg + a.away_xg))[0];
   el.innerHTML = `
     <div class="card"><div class="controls" style="justify-content:space-between">
       <div class="controls">
-        <span class="team-dot" style="background:${HOME()}"></span><select class="select" id="home">${opts(table[2].team_id)}</select>
-        <span class="muted">vs</span>
-        <span class="team-dot" style="background:${AWAY()}"></span><select class="select" id="away">${opts(table[0].team_id)}</select>
+        <select class="select" id="md">${mds.map((d) => `<option value="${d}" ${d === pick.matchday ? "selected" : ""}>Matchday ${d}</option>`).join("")}</select>
+        <select class="select" id="match" style="max-width:320px"></select>
         <div class="seg" id="speed"><button data-v="2">2 min/s</button><button data-v="5" class="on">5 min/s</button><button data-v="15">15 min/s</button></div>
-        <button class="btn primary" id="start">▶ Kick off</button>
+        <button class="btn primary" id="start">▶ Replay match</button>
       </div>
       <span class="chip" id="conn">Idle — WebSocket /ws/live</span>
     </div></div>
@@ -26,10 +27,10 @@ export async function render(el) {
     </div>
     <div class="grid g-21">
       <div class="card"><div class="card-head"><div><h3 class="card-title">In-play win probability</h3>
-        <div class="card-sub">Bayesian update of each team's scoring rate from live xG, recomputed every simulated minute</div></div></div>
+        <div class="card-sub">Bayesian update of each team's scoring rate from live xG, recomputed every minute of the replay</div></div></div>
         <div class="chart" id="wp"></div>
         <div style="margin-top:8px">${legendHTML([{ label: "Home win", color: HOME() }, { label: "Draw", color: css("--neutral") }, { label: "Away win", color: AWAY() }])}</div>
-        <div class="explain">Prior: pre-match Dixon-Coles rates λ ~ Gamma(cλ, c). After fraction <i>t</i> of the match with live xG <i>x</i>,
+        <div class="explain">Prior: pre-match Dixon-Coles rates λ ~ Gamma(cλ, c), fitted only on <b>earlier</b> matchdays, so the model never sees the result it is forecasting. After fraction <i>t</i> of the match with live xG <i>x</i>,
           the posterior mean rate is <code>(cλ + x) / (c + t)</code>. Remaining goals ~ Poisson(rate · (1 − t)), convolved with the current score.
           <div class="kv" style="margin-top:10px" id="rates"></div></div>
       </div>
@@ -41,24 +42,29 @@ export async function render(el) {
     <div class="card"><div class="card-head"><div><h3 class="card-title">Live pitch</h3><div class="card-sub">Shots sized by xG · arrows = high-threat passes/carries (ΔxT &gt; 0.03) · home attacks →</div></div></div>
       <div class="chart" id="lpitch" style="max-width:900px;margin:0 auto"></div></div>`;
 
+  const fill = (selected) => {
+    const md = +el.querySelector("#md").value;
+    el.querySelector("#match").innerHTML = all.filter((m) => m.matchday === md).map((m) =>
+      `<option value="${m.id}" ${m.id === selected ? "selected" : ""}>${m.home} ${m.home_goals}–${m.away_goals} ${m.away}</option>`).join("");
+  };
+  fill(pick.id);
+  el.querySelector("#md").addEventListener("change", () => fill());
   let ws = null, speed = 5;
   el.querySelectorAll("#speed button").forEach((b) => b.addEventListener("click", () => {
     speed = +b.dataset.v; el.querySelectorAll("#speed button").forEach((x) => x.classList.toggle("on", x === b));
   }));
   const startBtn = el.querySelector("#start");
-  const stop = () => { if (ws) { ws.onclose = null; ws.close(); ws = null; } startBtn.textContent = "▶ Kick off"; };
+  const stop = () => { if (ws) { ws.onclose = null; ws.close(); ws = null; } startBtn.textContent = "▶ Replay match"; };
   startBtn.addEventListener("click", () => {
     if (ws) { stop(); el.querySelector("#conn").className = "chip"; el.querySelector("#conn").textContent = "Stopped"; return; }
-    const home = +el.querySelector("#home").value, away = +el.querySelector("#away").value;
-    if (home === away) return;
-    start(el, home, away, speed, (s) => { ws = s; }, stop);
+    start(el, +el.querySelector("#match").value, speed, (s) => { ws = s; }, stop);
     startBtn.textContent = "■ Stop";
   });
   return stop;
 }
 
-function start(el, home, away, speed, setWs, stop) {
-  const ws = liveSocket({ home, away, speed });
+function start(el, matchId, speed, setWs, stop) {
+  const ws = liveSocket({ match_id: matchId, speed });
   setWs(ws);
   const conn = el.querySelector("#conn");
   conn.className = "chip"; conn.textContent = "Connecting…";
@@ -83,6 +89,11 @@ function start(el, home, away, speed, setWs, stop) {
     }
     if (m.type === "fulltime") {
       conn.className = "chip"; conn.textContent = `Full time · ${m.score[0]}–${m.score[1]} (xG ${m.xg[0]}–${m.xg[1]})`;
+      const og = m.own_goals || [0, 0];
+      if (og[0] || og[1]) {
+        el.querySelector("#score").textContent = `${m.score[0]} – ${m.score[1]}`;
+        addFeed(feed, "OG", `Own goal${og[0] + og[1] > 1 ? "s" : ""} added to the official score (own goals are not shots)`, "", false);
+      }
       addFeed(feed, "FT", `Full time: ${meta.home} ${m.score[0]}–${m.score[1]} ${meta.away}`, "", true);
       stop();
       return;
@@ -95,6 +106,7 @@ function start(el, home, away, speed, setWs, stop) {
     probs.push({ minute: m.minute, ...m.probs });
     drawWP(el.querySelector("#wp"), probs);
     el.querySelector("#rates").innerHTML = `
+      <span class="k">Prior source</span><span class="v" style="font-weight:500">${meta.prior}</span>
       <span class="k">Pre-match λ (home / away)</span><span class="v">${meta.lambda[0].toFixed(2)} / ${meta.lambda[1].toFixed(2)}</span>
       <span class="k">Posterior rate (home / away)</span><span class="v">${m.probs.rate_home.toFixed(2)} / ${m.probs.rate_away.toFixed(2)}</span>`;
     const stats = [["Possession", ...m.possession, (v) => `${v}%`], ["xG", ...m.xg, (v) => v.toFixed(2)], ["Shots", ...m.shots, (v) => v], ["xT created", ...m.xt, (v) => v.toFixed(2)]];

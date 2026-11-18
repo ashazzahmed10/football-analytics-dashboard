@@ -31,6 +31,30 @@ def _f(v, nd=3):
     return None if v is None or (isinstance(v, float) and np.isnan(v)) else round(float(v), nd)
 
 
+def resolve_database(data_dir: Path, source: str = "statsbomb") -> Path:
+    """
+    statsbomb: use data/statsbomb.db; unpack the shipped data/statsbomb.db.gz on first run,
+               or download from StatsBomb open data if neither exists.
+    synthetic: use data/synthetic.db, generating it with the match engine if needed.
+    """
+    data_dir.mkdir(parents=True, exist_ok=True)
+    if source == "synthetic":
+        db = data_dir / "synthetic.db"
+        if not db.exists():
+            build_database(db)
+        return db
+    from .data.statsbomb import build_statsbomb_database, decompress
+    db = data_dir / "statsbomb.db"
+    gz = data_dir / "statsbomb.db.gz"
+    if not db.exists():
+        if gz.exists():
+            print("[pitchiq] unpacking bundled StatsBomb data ...")
+            decompress(gz, db)
+        else:
+            build_statsbomb_database(db)
+    return db
+
+
 class Platform:
     def __init__(self, db_path: Path):
         self.db_path = db_path
@@ -43,13 +67,20 @@ class Platform:
         self.matches = pd.read_sql("SELECT * FROM matches", con).set_index("id", drop=False)
         self.apps = pd.read_sql("SELECT * FROM appearances", con)
         ev = pd.read_sql("SELECT * FROM events", con)
+        try:
+            self.meta = dict(con.execute("SELECT key, value FROM meta").fetchall())
+        except sqlite3.OperationalError:
+            self.meta = {}
+        self.meta.setdefault("source", "synthetic")
+        self.meta.setdefault("competition", "PitchIQ Synthetic League")
+        self.is_real = self.meta["source"] != "synthetic"
         con.close()
         self.timings = {"load": time.time() - t0}
 
         # ---------------------------------------------------------------- xG
         t = time.time()
         shots = ev[ev.type == "shot"]
-        self.xg = XGModel().fit({
+        self.xg = XGModel(benchmark="StatsBomb xG" if self.is_real else "Oracle (true p)").fit({
             "x": shots.x.values, "y": shots.y.values, "header": (shots.body_part == "head").values,
             "situation": shots.situation.values, "outcome": shots.outcome.values, "true_xg": shots.true_xg.values})
         ev["xg"] = np.nan
@@ -124,7 +155,11 @@ class Platform:
         s_np_xg = shots[shots.situation != "penalty"].groupby("player_id").xg.sum()
         s_shots = cnt(shots)
         p_all, p_ok = cnt(passes), cnt(okp)
-        c_all, c_ok = cnt(carries), cnt(carries[carries.outcome == "success"])
+        c_all = cnt(carries)
+        dribbles = ev[ev.type == "dribble"]
+        if not len(dribbles):            # synthetic engine encodes take-ons as carries that can fail
+            dribbles = carries
+        d_all, d_ok = cnt(dribbles), cnt(dribbles[dribbles.outcome == "success"])
         xt = ev.groupby("player_id").xt.sum()
         tk, ic = cnt(ev[ev.type == "tackle"]), cnt(ev[ev.type == "interception"])
         prg, bx = cnt(prog), cnt(box)
@@ -137,7 +172,9 @@ class Platform:
             get = lambda s: float(s.get(pid, 0))
             rows.append({
                 "player_id": int(pid), "name": p["name"], "team_id": int(p.team_id),
-                "team": self.team_name(p.team_id), "position": p.position, "age": int(p.age),
+                "team": self.team_name(p.team_id), "position": p.position,
+                "age": None if pd.isna(p.age) else int(p.age),
+                "country": None if pd.isna(p.get("country")) else p.get("country"),
                 "minutes": int(m), "apps": int(apps.get(pid, 0)),
                 "goals": int(get(s_goals)), "assists": int(assists.get(pid, 0)), "xg": get(s_xg),
                 "npxg": get(s_np_xg), "shots": int(get(s_shots)), "xt": get(xt),
@@ -146,10 +183,9 @@ class Platform:
                 "passes_p90": get(p_all) * per, "pass_pct": get(p_ok) / get(p_all) * 100 if get(p_all) else 0.0,
                 "prog_passes_p90": get(prg) * per, "xt_p90": get(xt) * per, "box_entries_p90": get(bx) * per,
                 "carries_p90": get(c_all) * per,
-                "dribble_pct": get(c_ok) / get(c_all) * 100 if get(c_all) else 0.0,
+                "dribble_pct": get(d_ok) / get(d_all) * 100 if get(d_all) else 0.0,
                 "tackles_p90": get(tk) * per, "interceptions_p90": get(ic) * per,
                 "avg_x": float(avg_x.get(pid, 60.0)),
-                "rating_truth": {k: float(p[k]) for k in ("passing", "finishing", "dribbling", "defending")},
             })
         return rows
 
@@ -227,6 +263,7 @@ class Platform:
                 "xg_auc": round(self.xg.report["metrics"]["model"]["auc"], 3),
                 "pipeline_seconds": round(self.timings["total"], 2),
             },
+            "source": self.meta,
             "leader": table[0],
             "top_scorers": [{k: r[k] for k in ("player_id", "name", "team", "goals", "assists", "xg", "shots",
                                                 "minutes")} for r in top_scorers],
@@ -248,15 +285,15 @@ class Platform:
                          "attack": goals[t]["attack"], "defence": goals[t]["defence"],
                          "xg_attack": xg[t]["attack"], "xg_defence": xg[t]["defence"],
                          "elo": self.elo.ratings[t],
-                         "true_attack": float(self.teams.loc[t, "true_attack"]),
-                         "true_defence": float(self.teams.loc[t, "true_defence"])})
+                         "true_attack": _f(self.teams.loc[t, "true_attack"]),
+                         "true_defence": _f(self.teams.loc[t, "true_defence"])})
         df = pd.DataFrame(rows)
         corr = lambda a, b: round(float(np.corrcoef(df[a], df[b])[0, 1]), 3)
         return {"teams": rows,
                 "params": {"home_advantage": float(self.dc.home), "rho": float(self.dc.rho),
                            "intercept": float(self.dc.mu), "xi": self.dc.xi, "converged": self.dc.converged,
                            "iterations": self.dc.n_iter},
-                "truth_recovery": {
+                "truth_recovery": None if self.is_real else {
                     "goals_model": {"attack_r": corr("attack", "true_attack"),
                                     "defence_r": corr("defence", "true_defence")},
                     "xg_model": {"attack_r": corr("xg_attack", "true_attack"),
@@ -274,7 +311,8 @@ class Platform:
         fixtures = []
         for m in self.matches[(self.matches.home_id == tid) | (self.matches.away_id == tid)].itertuples():
             fixtures.append(self._match_row(m))
-        heat, _, _ = np.histogram2d(mine[mine.type.isin(["pass", "carry"])].x, mine[mine.type.isin(["pass", "carry"])].y,
+        tm = mine[mine.type.isin(["pass", "carry"]) & (mine.situation.fillna("") != "kickoff")]
+        heat, _, _ = np.histogram2d(tm.x, tm.y,
                                     bins=[24, 16], range=[[0, 120], [0, 80]])
         return {
             "team": {"id": int(tid), "name": self.team_name(tid), "short": self.teams.loc[tid, "short"]},
@@ -297,7 +335,8 @@ class Platform:
         row = {"id": int(m.id), "matchday": int(m.matchday), "home_id": int(m.home_id), "away_id": int(m.away_id),
                "home": self.team_name(m.home_id), "away": self.team_name(m.away_id),
                "home_short": self.teams.loc[m.home_id, "short"], "away_short": self.teams.loc[m.away_id, "short"],
-               "played": bool(m.played)}
+               "played": bool(m.played),
+               "date": m.date if isinstance(getattr(m, "date", None), str) else None}
         if m.played:
             pm = self.played.loc[m.id]
             row.update(home_goals=int(m.home_goals), away_goals=int(m.away_goals),
@@ -400,19 +439,117 @@ class Platform:
             "clean_sheet": {"home": float(M[:, 0].sum()), "away": float(M[0, :].sum())},
         }
 
-    @lru_cache(maxsize=8)
-    def season_simulation(self, n_sims: int = 10000, model: str = "dixon_coles", seed: int = 0):
+    def _final_table(self):
+        pts, gd, gf = ({t: 0 for t in self.team_ids} for _ in range(3))
+        for m in self.played.itertuples():
+            for t, a, b in ((m.home_id, m.home_goals, m.away_goals), (m.away_id, m.away_goals, m.home_goals)):
+                pts[t] += 3 if a > b else 1 if a == b else 0
+                gd[t] += a - b
+                gf[t] += a
+        order = sorted(self.team_ids, key=lambda t: (-pts[t], -gd[t], -gf[t]))
+        return {t: {"points": pts[t], "position": order.index(t) + 1} for t in self.team_ids}
+
+    @lru_cache(maxsize=32)
+    def season_simulation(self, n_sims: int = 10000, model: str = "dixon_coles", seed: int = 0,
+                          as_of: Optional[int] = None):
+        """
+        Simulate every fixture after matchday `as_of` using models fitted ONLY on matches up to `as_of`.
+        With real (completed) seasons this is a genuine out-of-sample test: the response includes
+        what actually happened so the forecast can be checked.
+        """
         t = time.time()
-        mdl = self.dc if model == "dixon_coles" else self.dc_xg
-        played = list(zip(self.played.home_id, self.played.away_id, self.played.home_goals, self.played.away_goals))
-        remaining = list(zip(self.remaining.home_id, self.remaining.away_id))
+        if as_of is None:
+            as_of = self.current_md if len(self.remaining) else max(1, self.current_md // 2)
+        as_of = int(min(max(as_of, 1), self.current_md))
+        known = self.played[self.played.matchday <= as_of]
+        future = pd.concat([self.played[self.played.matchday > as_of], self.remaining])
+        mdl = self._fit_dc(known, "goals" if model == "dixon_coles" else "xg")
+        played = list(zip(known.home_id, known.away_id, known.home_goals, known.away_goals))
+        remaining = list(zip(future.home_id, future.away_id))
         res = simulate_season(mdl, self.team_ids, played, remaining, n_sims=n_sims, seed=seed)
+        final = self._final_table() if not len(self.remaining) else None
         for r in res:
             r["name"] = self.team_name(r["team_id"])
             r["short"] = self.teams.loc[r["team_id"], "short"]
+            if final and as_of < self.current_md:
+                r["actual_points"] = final[r["team_id"]]["points"]
+                r["actual_position"] = final[r["team_id"]]["position"]
         res.sort(key=lambda r: r["expected_position"])
-        return {"n_sims": n_sims, "model": model, "remaining_fixtures": len(remaining),
-                "seconds": round(time.time() - t, 3), "teams": res}
+        out = {"n_sims": n_sims, "model": model, "as_of": as_of, "max_matchday": self.current_md,
+               "remaining_fixtures": len(remaining), "seconds": round(time.time() - t, 3), "teams": res}
+        if final and as_of < self.current_md:
+            champ = min(final, key=lambda k: final[k]["position"])
+            row = next(r for r in res if r["team_id"] == champ)
+            out["actual_champion"] = {"team_id": int(champ), "name": self.team_name(champ),
+                                      "title_probability": row["title"]}
+            pred = np.array([r["expected_points"] for r in res])
+            act = np.array([r["actual_points"] for r in res])
+            out["accuracy"] = {"points_mae": float(np.mean(np.abs(pred - act))),
+                               "points_r": float(np.corrcoef(pred, act)[0, 1])}
+        return out
+
+    @lru_cache(maxsize=2)
+    def title_race(self, model: str = "xg_poisson", n_sims: int = 3000, start: int = 5):
+        """Title / top-4 / relegation odds re-estimated after every matchday (each fit sees only the past)."""
+        rows = []
+        for md in range(start, self.current_md):
+            sim = self.season_simulation(n_sims, model, 0, md)
+            rows.append({"matchday": md, **{int(r["team_id"]): {"title": r["title"], "top4": r["top4"],
+                                                                   "relegation": r["relegation"]} for r in sim["teams"]}})
+        final = self._final_table() if not len(self.remaining) else None
+        order = sorted(self.team_ids, key=lambda t: final[t]["position"]) if final else self.team_ids
+        return {"model": model, "n_sims": n_sims,
+                "teams": [{"team_id": int(t), "name": self.team_name(t), "short": self.teams.loc[t, "short"],
+                           "final_position": final[t]["position"] if final else None,
+                           "series": [{"matchday": r["matchday"], **r[int(t)]} for r in rows]} for t in order]}
+
+    @lru_cache(maxsize=4)
+    def halfway_test(self, split: Optional[int] = None):
+        """
+        Fit each model on matchdays <= split, predict every team's points in the rest of the season,
+        compare with what really happened. Baseline: points-per-game so far x games left.
+        """
+        split = split or self.current_md // 2
+        known = self.played[self.played.matchday <= split]
+        later = self.played[self.played.matchday > split]
+        def pts(df):
+            p = {t: 0 for t in self.team_ids}
+            g = {t: 0 for t in self.team_ids}
+            for m in df.itertuples():
+                p[m.home_id] += 3 if m.home_goals > m.away_goals else 1 if m.home_goals == m.away_goals else 0
+                p[m.away_id] += 3 if m.away_goals > m.home_goals else 1 if m.home_goals == m.away_goals else 0
+                g[m.home_id] += 1; g[m.away_id] += 1
+            return p, g
+        p_known, g_known = pts(known)
+        p_later, g_later = pts(later)
+        preds = {"table_ppg": {t: p_known[t] / max(g_known[t], 1) * g_later[t] for t in self.team_ids}}
+        for key in ("dixon_coles", "xg_poisson"):
+            sim = self.season_simulation(5000, key, 0, split)
+            preds[key] = {r["team_id"]: r["expected_points"] - r["current_points"] for r in sim["teams"]}
+        actual = np.array([p_later[t] for t in self.team_ids], float)
+        summary = {}
+        for key, pr in preds.items():
+            v = np.array([pr[t] for t in self.team_ids])
+            summary[key] = {"mae": float(np.mean(np.abs(v - actual))), "r": float(np.corrcoef(v, actual)[0, 1])}
+        teams = [{"team_id": int(t), "name": self.team_name(t), "short": self.teams.loc[t, "short"],
+                  "actual": p_later[t], **{k: round(float(preds[k][t]), 2) for k in preds}} for t in self.team_ids]
+        return {"split": split, "games_after": int(len(later)), "summary": summary, "teams": teams}
+
+    def prematch_rates(self, match_id: int):
+        """Pre-match scoring rates using ONLY matches before this one's matchday (no leakage)."""
+        md = int(self.matches.loc[match_id, "matchday"])
+        m = self.matches.loc[match_id]
+        before = self.played[self.played.matchday < md]
+        if before.matchday.nunique() < 4:
+            gh = float(self.played.home_goals.mean()); ga = float(self.played.away_goals.mean())
+            return gh, ga, "league average (too early in the season to rate teams)"
+        mdl = self._dc_before(md)
+        lam, mu = mdl.rates(m.home_id, m.away_id)
+        return lam, mu, f"Dixon-Coles fitted on matchdays 1–{md - 1}"
+
+    @lru_cache(maxsize=64)
+    def _dc_before(self, md: int):
+        return self._fit_dc(self.played[self.played.matchday < md], "goals")
 
     @lru_cache(maxsize=1)
     def backtest(self, start_md: int = 8):
@@ -447,7 +584,7 @@ class Platform:
         rows = [r for r in self.player_rows if r["minutes"] >= min_minutes
                 and (team_id is None or r["team_id"] == team_id) and (position is None or r["position"] == position)]
         rows.sort(key=lambda r: -r.get(sort, 0))
-        return [{k: (round(v, 3) if isinstance(v, float) else v) for k, v in r.items() if k != "rating_truth"}
+        return [{k: (round(v, 3) if isinstance(v, float) else v) for k, v in r.items() }
                 for r in rows[:limit]]
 
     def player_detail(self, pid: int):
@@ -456,7 +593,7 @@ class Platform:
             return None
         ev = self.events[self.events.player_id == pid]
         shots = ev[ev.type == "shot"]
-        touches = ev[ev.type.isin(["pass", "carry"])]
+        touches = ev[ev.type.isin(["pass", "carry"]) & (ev.situation.fillna("") != "kickoff")]
         heat, _, _ = np.histogram2d(touches.x, touches.y, bins=[24, 16], range=[[0, 120], [0, 80]])
         top_xt = ev[ev.xt.notna()].nlargest(40, "xt")
         out = {"player": {k: v for k, v in row.items()}, "shots": self._shot_list(shots),

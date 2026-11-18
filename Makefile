@@ -1,17 +1,20 @@
-.PHONY: install run test rebuild-data docker
+.PHONY: install run run-synthetic test rebuild-data docker
 
 install:
 	pip install -r backend/requirements-dev.txt
 
 run:
-	cd backend && uvicorn app.main:app --reload --port 8000
+	cd backend && python -m uvicorn app.main:app --reload --port 8000
+
+run-synthetic:
+	cd backend && PITCHIQ_SOURCE=synthetic python -m uvicorn app.main:app --reload --port 8000
 
 test:
 	cd backend && python -m pytest -q
 
-rebuild-data:
-	rm -f backend/data/pitchiq.db
-	cd backend && python -c "from pathlib import Path; from app.data.league import build_database; build_database(Path('data/pitchiq.db'))"
+rebuild-data:   # re-download Premier League 2015/16 from StatsBomb open data
+	rm -f backend/data/statsbomb.db
+	cd backend && python -m app.data.statsbomb --gzip
 
 docker:
 	docker build -t pitchiq . && docker run --rm -p 8000:8000 pitchiq

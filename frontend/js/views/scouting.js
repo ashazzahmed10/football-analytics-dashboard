@@ -93,7 +93,7 @@ async function profile(box, id, select) {
   const p = d.player, pr = d.profile;
   box.innerHTML = `
     <div class="card-head"><div><h3 class="card-title" style="font-size:18px">${p.name}</h3>
-      <div class="card-sub">${p.team} · ${p.position} · age ${p.age} · ${fmt.int(p.minutes)} min</div></div>
+      <div class="card-sub">${p.team} · ${p.position} · ${p.country || (p.age ? `age ${p.age}` : "")} · ${fmt.int(p.minutes)} min</div></div>
       ${pr ? `<span class="chip"><svg width="10" height="10" viewBox="-6 -6 12 12"><path d="${d3.symbol(SHAPES[pr.cluster], 60)()}" fill="${series(pr.cluster)}"/></svg>${pr.role}</span>` : ""}</div>
     <div class="grid g-4" style="gap:8px;margin-bottom:14px">
       ${[["Goals", p.goals], ["Assists", p.assists], ["xG", p.xg.toFixed(1)], ["xT", p.xt.toFixed(2)]].map(([k, v]) => `<div style="background:var(--surface-2);border-radius:10px;padding:8px 10px"><div class="muted" style="font-size:11px">${k}</div><div style="font-size:18px;font-weight:700">${v}</div></div>`).join("")}

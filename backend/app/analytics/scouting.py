@@ -60,19 +60,21 @@ def silhouette(X: np.ndarray, lab: np.ndarray) -> float:
 POS_GROUP = {"GK": "Goalkeeper", "CB": "Centre-back", "RB": "Full-back", "LB": "Full-back",
              "DM": "Midfielder", "CM": "Midfielder", "RW": "Winger", "LW": "Winger", "ST": "Striker"}
 TRAIT_WORDS = {"xt_p90": "Creative", "prog_passes_p90": "Progressive", "tackles_p90": "Ball-winning",
-               "interceptions_p90": "Reading-the-game", "xg_p90": "Goal-threat", "pass_pct": "Possession",
-               "carries_p90": "Ball-carrying", "box_entries_p90": "Penetrative", "passes_p90": "Metronome"}
+               "interceptions_p90": "Screening", "xg_p90": "Goal-threat", "pass_pct": "Possession",
+               "carries_p90": "Ball-carrying", "box_entries_p90": "Penetrative", "passes_p90": "Metronome",
+               "dribble_pct": "Dribbling"}
 
 
-def name_cluster(members_pos: list[str], center_z: np.ndarray, group_mean_z: dict[str, np.ndarray]) -> str:
-    """Label = defining trait (vs. players of the same position group) + dominant position group."""
+def cluster_name_candidates(members_pos: list[str], center_z: np.ndarray, group_mean_z: dict[str, np.ndarray]):
+    """Ranked labels: defining trait (vs. players of the same position group) + dominant position group."""
     groups = [POS_GROUP[p] for p in members_pos]
     base = max(set(groups), key=groups.count)
-    if base == "Goalkeeper":
-        return base
     rel = center_z - group_mean_z[base]
-    best = max(TRAIT_WORDS, key=lambda k: rel[KEYS.index(k)])
-    return f"{TRAIT_WORDS[best]} {base}"
+    traits = sorted(TRAIT_WORDS, key=lambda k: -rel[KEYS.index(k)])
+    if base == "Goalkeeper":   # keepers differ mainly in distribution, not attacking traits
+        sweeper = rel[KEYS.index("passes_p90")] + rel[KEYS.index("avg_x")] > 0
+        return ["Sweeper Keeper", "Goalkeeper"] if sweeper else ["Goalkeeper", "Sweeper Keeper"]
+    return [f"{TRAIT_WORDS[t]} {base}" for t in traits]
 
 
 class ScoutingModel:
@@ -101,10 +103,8 @@ class ScoutingModel:
         group_mean = {g: Z[groups == g].mean(0) for g in set(groups)}
         names = []
         for j in range(self.k):
-            nm = name_cluster(list(positions[self.labels == j]), self.centers[j], group_mean)
-            while nm in names:
-                nm += " (B)"
-            names.append(nm)
+            cands = cluster_name_candidates(list(positions[self.labels == j]), self.centers[j], group_mean)
+            names.append(next(c for c in cands if c not in names))
         self.cluster_names = names
         norms = np.linalg.norm(Z, axis=1, keepdims=True) + 1e-9
         self.Zn = Z / norms

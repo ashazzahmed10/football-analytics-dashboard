@@ -116,8 +116,9 @@ class LogisticRegressionIRLS:
 
 
 class XGModel:
-    def __init__(self, seed: int = 7):
+    def __init__(self, seed: int = 7, benchmark: str = "Oracle (true p)"):
         self.seed = seed
+        self.benchmark = benchmark   # real data: StatsBomb's own xG; synthetic: the simulator's true p
 
     def fit(self, shots: dict[str, np.ndarray]):
         y = (shots["outcome"] == "goal").astype(float)
@@ -138,6 +139,8 @@ class XGModel:
         p_dist = dist_only.predict_proba(X[te][:, [0]])
 
         z = self.model.beta_[1:] / self.model.se_[1:]
+        bm = ~np.isnan(true_p[te].astype(float))
+        tp, yb, pb = true_p[te][bm].astype(float), yy[te][bm], p_te[bm]
         self.report = {
             "n_shots": int(len(y)), "n_train": int(len(tr)), "n_test": int(len(te)),
             "goal_rate": float(y.mean()), "penalty_xg": self.penalty_xg,
@@ -150,10 +153,10 @@ class XGModel:
                                   "brier": float(np.mean((p_dist - yy[te]) ** 2)), "auc": roc_auc(yy[te], p_dist)},
                 "base_rate": {"log_loss": log_loss(yy[te], base), "brier": float(np.mean((base - yy[te]) ** 2)),
                               "auc": 0.5},
-                "oracle": {"log_loss": log_loss(yy[te], true_p[te]),
-                           "brier": float(np.mean((true_p[te] - yy[te]) ** 2)), "auc": roc_auc(yy[te], true_p[te])},
+                "oracle": {"log_loss": log_loss(yb, tp), "brier": float(np.mean((tp - yb) ** 2)), "auc": roc_auc(yb, tp)},
             },
-            "corr_with_truth": float(np.corrcoef(p_te, true_p[te])[0, 1]),
+            "corr_with_truth": float(np.corrcoef(pb, tp)[0, 1]),
+            "benchmark_name": self.benchmark,
             "coefficients": [
                 {"feature": f, "beta": float(b), "se": float(s), "z": float(zz),
                  "odds_ratio_per_sd": float(math.exp(b))}

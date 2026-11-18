@@ -24,11 +24,15 @@ export async function render(el) {
         <div class="card tile"><div class="label">Selected shot</div><div class="value" id="shot-xg">–</div><div class="hint" id="shot-desc">Click the pitch</div></div>
         <div class="card"><h3 class="card-title" style="margin-bottom:10px">Held-out performance</h3>
           <table class="data"><thead><tr><th>Model</th><th>Log-loss</th><th>Brier</th><th>AUC</th></tr></thead><tbody>
-          ${[["PitchIQ xG", M.model], ["Distance only", M.distance_only], ["Base rate", M.base_rate], ["Oracle (true p)", M.oracle]].map(([n, m], i) =>
+          ${[["PitchIQ xG", M.model], ["Distance only", M.distance_only], ["Base rate", M.base_rate], [rep.benchmark_name || "Oracle (true p)", M.oracle]].map(([n, m], i) =>
             `<tr><td class="${i === 0 ? "strong" : ""}">${n}</td><td>${m.log_loss.toFixed(4)}</td><td>${m.brier.toFixed(4)}</td><td>${m.auc.toFixed(3)}</td></tr>`).join("")}
           </tbody></table>
-          <div class="card-note">Trained on <b>${fmt.int(rep.n_train)}</b> shots, tested on <b>${fmt.int(rep.n_test)}</b>. Correlation with the simulator's hidden true probabilities:
-            <b>r = ${rep.corr_with_truth.toFixed(3)}</b>. The model's log-loss is within ${((M.model.log_loss / M.oracle.log_loss - 1) * 100).toFixed(1)}% of the theoretical optimum (oracle).</div>
+          <div class="card-note">Trained on <b>${fmt.int(rep.n_train)}</b> shots, tested on <b>${fmt.int(rep.n_test)}</b>. ${rep.benchmark_name === "StatsBomb xG"
+            ? `Benchmark: <b>StatsBomb's commercial xG model</b>, which also sees where every defender and the goalkeeper were standing (freeze frames).
+               Our location-only model correlates <b>r = ${rep.corr_with_truth.toFixed(3)}</b> with it and recovers
+               <b>${((M.model.auc - 0.5) / (M.oracle.auc - 0.5) * 100).toFixed(0)}%</b> of its ranking skill (AUC above chance).`
+            : `Correlation with the simulator's hidden true probabilities: <b>r = ${rep.corr_with_truth.toFixed(3)}</b>.
+               The model's log-loss is within ${((M.model.log_loss / M.oracle.log_loss - 1) * 100).toFixed(1)}% of the theoretical optimum (oracle).`}</div>
         </div>
       </div>
     </div>

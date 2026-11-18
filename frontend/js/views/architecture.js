@@ -6,30 +6,34 @@ const ENDPOINTS = [
   ["GET", "/api/league/table", "Standings with xG, xPts, Elo, form"],
   ["GET", "/api/league/elo", "Elo history per team"],
   ["GET", "/api/league/ratings", "Dixon-Coles ratings + ground-truth recovery"],
-  ["GET", "/api/teams/1", "Team dossier: shots, heatmap, fixtures"],
+  
   ["GET", "/api/matches?matchday=1", "Fixtures (played & upcoming with probabilities)"],
-  ["GET", "/api/matches/1", "Shot map, xG timeline, momentum, pass networks"],
+  
   ["GET", "/api/models/xg", "xG report: coefficients, calibration, ROC"],
   ["POST", "/api/models/xg/predict", "Score arbitrary shots"],
   ["GET", "/api/models/xg/surface", "xG evaluated over a pitch grid"],
   ["GET", "/api/models/xt", "xT grid + value-iteration snapshots"],
-  ["GET", "/api/predict?home=1&away=2", "Pre-match forecast from 3 models"],
-  ["GET", "/api/simulate/season?n=2000", "Monte Carlo season simulation"],
+  ["GET", "/api/teams", "All teams (ids for the endpoints below)"],
+  ["GET", "/api/simulate/season?n=2000&as_of=20", "Monte Carlo from any matchday"],
   ["GET", "/api/models/backtest", "Walk-forward RPS backtest"],
   ["GET", "/api/players/map", "PCA coordinates + k-means roles"],
-  ["GET", "/api/players/20/similar", "Cosine-similarity search"],
-  ["WS", "/ws/live?home=1&away=2&speed=5", "Live match stream (JSON per minute)"],
+  
+  ["GET", "/api/simulate/title-race", "Title odds after every matchday"],
+  ["GET", "/api/models/halfway", "Predict the 2nd half of the season"],
+  ["WS", "/ws/live?match_id=…&speed=5", "Minute-by-minute match replay (JSON)"],
 ];
 
 export async function render(el) {
   const o = await api("/api/overview");
+  const real = o.source && o.source.source === "statsbomb";
   const t = o.timings;
   el.innerHTML = `
     <div class="card">
       <div class="card-head"><div><h3 class="card-title">Data &amp; model pipeline</h3><div class="card-sub">Runs once at start-up in ${t.total}s; results are cached in memory and served from the API</div></div></div>
       <div class="pipeline">
         ${[
-          ["engine.py", "1 · Match engine", "Markov-chain possession simulator generates StatsBomb-style events (passes, carries, shots, tackles) with hidden ground-truth probabilities."],
+          real ? ["statsbomb.py", "1 · Ingestion", `Streams ${o.source.competition} from StatsBomb open data (380 match files + lineups, 8 parallel workers), keeps only modelled event types and maps them to one schema.`]
+               : ["engine.py", "1 · Match engine", "Markov-chain possession simulator generates StatsBomb-style events (passes, carries, shots, tackles) with hidden ground-truth probabilities."],
           ["league.py → SQLite", "2 · Event store", `${o.kpis.events.toLocaleString()} events in an indexed SQLite DB, loaded with pandas in ${t.load}s.`],
           ["xg.py · xt.py", "3 · Action value models", `xG logistic regression (IRLS) in ${t.xg}s; xT value iteration in ${t.xt}s. Every action gets a value.`],
           ["ratings.py", "4 · Team models", `Elo, Dixon-Coles MLE (goals & xG), Monte Carlo, walk-forward backtest — fitted in ${t.ratings}s.`],
@@ -56,9 +60,12 @@ export async function render(el) {
       <div class="card"><h3 class="card-title">Frontend</h3><div class="card-note">
         <b>Vanilla JavaScript (ES modules)</b>, no build step · <b>D3.js v7</b> for every chart (pitch rendering in native 120×80 StatsBomb units, contours, stacked areas, symbol scatter) ·
         hash router with lazily-imported views · theme tokens in CSS custom properties (light/dark) · ResizeObserver-driven responsive redraws · native WebSocket client.</div></div>
-      <div class="card"><h3 class="card-title">Why simulate the data?</h3><div class="card-note">
-        Real event data is licensed and has no ground truth. The simulator knows each team's true strength and every shot's true probability,
-        so the app can <b>prove</b> its models work (xG within 1% of the oracle log-loss; ratings correlate with hidden strength).
+      <div class="card"><h3 class="card-title">${real ? "Real data, honest validation" : "Why simulate the data?"}</h3><div class="card-note">${real
+        ? `Every match, player and event comes from <b>${o.source.competition}</b> (StatsBomb open data). Because the season is complete, every forecast is
+           tested out-of-sample: models are fitted only on matches before the ones they predict, and the xG model is benchmarked against StatsBomb's own.
+           A synthetic league with known ground truth is still available (<code>PITCHIQ_SOURCE=synthetic</code>) to prove the estimators recover true parameters.`
+        : `Real event data is licensed and has no ground truth. The simulator knows each team's true strength and every shot's true probability,
+        so the app can <b>prove</b> its models work (xG within 1% of the oracle log-loss; ratings correlate with hidden strength).`}
         The schema mirrors StatsBomb, so open data can be plugged into the same pipeline.</div></div>
     </div>`;
 

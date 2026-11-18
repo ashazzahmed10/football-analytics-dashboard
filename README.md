@@ -2,7 +2,7 @@
 
 # ⚽ PitchIQ: Football Analytics Engine
 
-**Event-level football analytics, built from first principles in Python and JavaScript.**
+**Real Premier League event data, modelled from first principles in Python and JavaScript.**
 
 Expected Goals · Expected Threat · Dixon-Coles · Elo · Monte Carlo · Pass-Network Graphs · PCA / k-means Scouting · Live WebSocket Win Probability
 
@@ -11,7 +11,8 @@ Expected Goals · Expected Threat · Dixon-Coles · Elo · Monte Carlo · Pass-N
 ![NumPy](https://img.shields.io/badge/NumPy-models%20from%20scratch-013243?logo=numpy&logoColor=white)
 ![D3.js](https://img.shields.io/badge/D3.js-v7-F9A03C?logo=d3dotjs&logoColor=white)
 ![JavaScript](https://img.shields.io/badge/Vanilla%20JS-ES%20modules-F7DF1E?logo=javascript&logoColor=black)
-![Tests](https://img.shields.io/badge/tests-20%20passing-0ca30c)
+![Data](https://img.shields.io/badge/data-StatsBomb%20open%20data-red)
+![Tests](https://img.shields.io/badge/tests-25%20passing-0ca30c)
 
 ![Overview](docs/screenshots/overview.png)
 
@@ -21,65 +22,67 @@ Expected Goals · Expected Threat · Dixon-Coles · Elo · Monte Carlo · Pass-N
 
 ## What this is
 
-PitchIQ is **not** a dashboard that pulls numbers from somebody else's API and draws them.
-Every number on screen is computed by models implemented in this repository:
+PitchIQ analyses **every event of the 2015/16 Premier League season**: 380 matches, 549 real players and 687,417 passes, carries, dribbles, shots, tackles and interceptions. That was Leicester City's 5000-1 title season.
+
+It is **not** a dashboard that pulls numbers from somebody else's API. The raw events come from [StatsBomb open data](https://github.com/statsbomb/open-data), and every metric on screen is computed by models implemented in this repository:
 
 | Layer | What it does | Implemented with |
 |---|---|---|
-| **Match engine** | Simulates a 20-team league as ~356,000 StatsBomb-style events (passes, carries, shots, tackles, interceptions) using a Markov chain over pitch locations | Pure Python |
-| **xG model** | Logistic regression trained with **Newton-Raphson / IRLS**, with standard errors, calibration, ROC and comparison against an oracle | NumPy (no scikit-learn) |
+| **Ingestion** | Streams 380 match files + lineups from StatsBomb (8 parallel workers, ~35 s), maps them to one event schema, stores them in SQLite | Python stdlib |
+| **xG model** | Logistic regression trained with **Newton-Raphson / IRLS**, with standard errors, calibration and ROC, **benchmarked against StatsBomb's commercial xG** | NumPy (no scikit-learn) |
 | **xT model** | 16×12 Markov-chain **Expected Threat** grid solved by **value iteration**; every pass and carry gets a value | NumPy |
-| **Team ratings** | **Dixon-Coles** bivariate Poisson fitted by **maximum likelihood** with time decay and low-score correction, plus an xG-based variant and **Elo** | SciPy L-BFGS-B |
-| **Forecasting** | **Vectorised Monte Carlo** of the remaining season (50,000 seasons in about 0.7 s) and a **walk-forward backtest** scored by the Ranked Probability Score | NumPy |
+| **Team ratings** | **Dixon-Coles** bivariate Poisson fitted by **maximum likelihood** with time decay and low-score correction, an xG-based variant, and **Elo** | SciPy L-BFGS-B |
+| **Forecasting** | **Vectorised Monte Carlo** season simulation from *any* matchday, a **title-race** chart, a **walk-forward backtest** (RPS) and a **second-half-of-season** test, all strictly out-of-sample | NumPy |
 | **Graph analytics** | Per-match pass networks with **PageRank** (power iteration) and **betweenness centrality** (Brandes + Dijkstra) | Hand-written (no networkx) |
 | **Scouting** | 14 per-90 features → **PCA via SVD** → **k-means++** with k chosen by **silhouette score** → **cosine-similarity** search | NumPy |
-| **Live centre** | Streams a match over **WebSocket** with a **Bayesian (Gamma-Poisson) in-play win-probability model** | FastAPI + asyncio |
-| **API** | 20 REST endpoints plus 1 WebSocket, OpenAPI docs, Pydantic validation, GZip, CORS, rate limiting, timing headers | FastAPI |
+| **Live replay** | Streams a real match minute by minute over **WebSocket** with a **Bayesian (Gamma-Poisson) in-play win-probability model** | FastAPI + asyncio |
+| **API** | 22 REST endpoints plus 1 WebSocket, OpenAPI docs, Pydantic validation, GZip, CORS, rate limiting, timing headers | FastAPI |
 | **Frontend** | 10-view single-page app with a theme-aware design system, rendered entirely in D3 | Vanilla JS + D3 v7 |
 
-### Why simulate the data?
+### The headline result: could a model have seen Leicester coming?
 
-Real event data is licensed, and it has **no ground truth**: you never know a shot's *true* probability or a team's *true* strength.
-The engine knows both. That lets PitchIQ **prove** its models work, not just display their output:
+The Season Simulator refits the model using **only matches played so far**, then simulates the rest of the season 10,000 times. Leicester's title probability from the xG-based model:
 
-- The xG model's test log-loss is **within 1.6% of the oracle**, the best score any model could reach. Its predictions correlate **r = 0.98** with the hidden true probabilities.
-- xG-based team ratings recover hidden defensive strength with **r = 0.94**, against r = 0.85 for goal-based ratings. This is the core argument for using xG to rate teams.
+| After matchday | 10 | 19 (halfway) | 25 | 30 |
+|---|---|---|---|---|
+| **P(Leicester win the league)** | 0.6% | 10.7% | 57.8% | 76.2% |
 
-The event schema mirrors StatsBomb's (120×80 pitch, attacking left to right, per-team perspective), so real open data can be fed into the same pipeline.
+The **title-race chart** plots this for every matchday. Arsenal and Manchester City dominate until February, then Leicester's line takes over.
 
 ---
 
-## Results (default seed, after matchday 26)
+## Results (all out-of-sample)
 
-**xG model (held-out 20% of 5,547 shots)**
+**xG model (held-out 20% of 9,908 real shots)**
 
 | Model | Log-loss ↓ | Brier ↓ | ROC-AUC ↑ |
 |---|---|---|---|
-| **PitchIQ xG (8 features, IRLS)** | **0.2780** | **0.0832** | **0.832** |
-| Distance only | 0.2821 | 0.0845 | 0.816 |
-| Base rate | 0.3524 | 0.1001 | 0.500 |
-| *Oracle (true probabilities)* | *0.2736* | *0.0821* | *0.839* |
+| **PitchIQ xG (8 features, IRLS)** | **0.2868** | **0.0820** | **0.764** |
+| Distance only | 0.3023 | 0.0867 | 0.724 |
+| Base rate | 0.3334 | 0.0928 | 0.500 |
+| *StatsBomb xG (commercial benchmark)* | *0.2655* | *0.0756* | *0.808* |
 
-IRLS converges in **8 Newton steps**.
+StatsBomb's model also sees where every defender and the goalkeeper were standing (freeze frames). PitchIQ uses only shot location and context, yet recovers **86% of its ranking skill** (AUC above chance) and correlates **r = 0.80** with it. IRLS converges in **8 Newton steps**.
 
-**Match forecasting (walk-forward backtest, 190 out-of-sample matches, no look-ahead)**
+**Match forecasting (walk-forward backtest, 310 matches, each predicted using only earlier matchdays)**
 
 | Model | RPS ↓ | Log-loss ↓ | Accuracy |
 |---|---|---|---|
-| **Ensemble** | **0.1844** | **0.925** | 57.4% |
-| xG-Poisson | 0.1850 | 0.926 | 57.4% |
-| Dixon-Coles | 0.1876 | 0.971 | 58.4% |
-| Elo | 0.2004 | 0.971 | 54.2% |
-| Uniform (⅓ each) | 0.2392 | 1.099 | 35.3% |
+| **Ensemble** | **0.2058** | **1.027** | 47.7% |
+| Elo | 0.2073 | 1.033 | 45.5% |
+| xG-Poisson | 0.2082 | 1.031 | 48.7% |
+| Dixon-Coles | 0.2122 | 1.052 | 47.4% |
+| Uniform (⅓ each) | 0.2310 | 1.099 | 42.9% |
 
-**Ground-truth recovery (Pearson r against the hidden team strengths)**
+**Predicting the second half of the season (fit on matchdays 1–19, predict each team's points in matchdays 20–38)**
 
-| | Attack | Defence |
+| Method | Mean abs. error ↓ | Correlation ↑ |
 |---|---|---|
-| Dixon-Coles on goals | 0.771 | 0.853 |
-| Poisson on xG | **0.780** | **0.944** |
+| **xG-Poisson ratings** | **6.36 pts** | **0.568** |
+| League table (points per game × games left) | 6.75 pts | 0.510 |
+| Dixon-Coles (goals) | 6.96 pts | 0.503 |
 
-**Pipeline speed:** the full model stack (load 356k events → xG → xT → ratings → scouting) trains in **about 2.6 s** at start-up.
+xG beats the table. It measures the chances teams create and concede, which is more stable than results.
 
 ---
 
@@ -88,10 +91,10 @@ IRLS converges in **8 Newton steps**.
 | Match Centre | xG Lab |
 |---|---|
 | ![Match centre](docs/screenshots/match-centre.png) | ![xG lab](docs/screenshots/xg-lab.png) |
-| **Expected Threat** | **Live Simulator** |
-| ![xT](docs/screenshots/expected-threat.png) | ![Live](docs/screenshots/live.png) |
-| **Season Simulator** | **Model Validation** |
+| **Season Simulator & Title Race** | **Model Validation** |
 | ![Season](docs/screenshots/season-simulator.png) | ![Models](docs/screenshots/model-validation.png) |
+| **Live Replay** | **Expected Threat** |
+| ![Live](docs/screenshots/live.png) | ![xT](docs/screenshots/expected-threat.png) |
 | **Scouting Lab** | **Match Predictor** |
 | ![Scouting](docs/screenshots/scouting.png) | ![Predictor](docs/screenshots/predictor.png) |
 
@@ -102,24 +105,25 @@ IRLS converges in **8 Newton steps**.
 ```mermaid
 flowchart LR
     subgraph Data["Data layer"]
-        E[Match engine<br/>Markov-chain possessions] --> DB[(SQLite<br/>356k events)]
+        SB[(StatsBomb open data<br/>380 matches · JSON)] --> ING[statsbomb.py<br/>parallel ingestion]
+        ING --> DB[(SQLite<br/>687k events)]
+        EN[Synthetic match engine<br/>optional] -.-> DB
     end
     subgraph Models["Model layer (trained at start-up, cached)"]
-        DB --> XG[xG<br/>logistic regression · IRLS]
-        DB --> XT[xT<br/>value iteration]
-        XG --> TM[Team models<br/>Elo · Dixon-Coles · xG-Poisson]
-        TM --> MC[Monte Carlo<br/>season simulator]
-        TM --> BT[Walk-forward backtest]
-        XG & XT --> SC[Scouting<br/>per-90 → PCA → k-means++]
-        DB --> NW[Pass networks<br/>PageRank · Brandes]
+        DB --> XG[xG · IRLS]
+        DB --> XT[xT · value iteration]
+        XG --> TM[Elo · Dixon-Coles · xG-Poisson]
+        TM --> MC[Monte Carlo · title race]
+        TM --> BT[Backtest · halfway test]
+        XG & XT --> SC[Scouting · PCA → k-means++]
+        DB --> NW[Pass networks · PageRank · Brandes]
     end
     subgraph API["FastAPI"]
         R[REST /api/*]
         W[WebSocket /ws/live]
     end
     Models --> R
-    E -. live simulation .-> W
-    TM -. priors .-> W
+    Models --> W
     R --> UI[SPA · Vanilla JS + D3]
     W --> UI
 ```
@@ -128,7 +132,7 @@ flowchart LR
 1. The browser loads `index.html`. The hash router lazy-imports one view module (`frontend/js/views/*.js`).
 2. The view calls `api()`, a cached fetch wrapper that records round-trip and server latency (shown in the sidebar).
 3. FastAPI middleware applies a per-IP sliding-window rate limit, runs the handler, and stamps `X-Process-Time-ms`.
-4. Handlers read from the in-memory `Platform` object. Expensive results (season simulation, backtest, match detail) are memoised with `lru_cache`.
+4. Handlers read from the in-memory `Platform` object. Expensive results (season simulations, title race, backtest, match detail) are memoised with `lru_cache`.
 5. D3 renders every chart from CSS design tokens, so light and dark themes come for free.
 
 ---
@@ -138,11 +142,11 @@ flowchart LR
 <details>
 <summary><b>Expected Goals (xG): logistic regression with IRLS</b></summary>
 
-Features: distance, goal-mouth angle (the angle between the two posts as seen from the ball), distance × angle, log-distance, header, counter-attack, corner, direct free-kick.
+Features: distance, goal-mouth angle (the angle between the posts as seen from the ball), distance × angle, log-distance, header, counter-attack, corner, direct free-kick.
 
 $$p = \sigma(\beta^\top x), \qquad (X^\top W X + \lambda I)\,\Delta = X^\top (y-p) - \lambda\beta, \quad W=\mathrm{diag}(p(1-p))$$
 
-Newton steps converge quadratically. The inverse Hessian at the optimum gives the standard errors, which the UI shows as Wald z-scores. Penalties use the empirical conversion rate.
+Newton steps converge quadratically. The inverse Hessian at the optimum gives standard errors, which the UI shows as Wald z-scores. Penalties use the empirical conversion rate (81%).
 Code: `backend/app/analytics/xg.py`
 </details>
 
@@ -151,8 +155,7 @@ Code: `backend/app/analytics/xg.py`
 
 $$xT(z) = s(z)\,g(z) + m(z)\sum_{z'} T(z\to z')\,xT(z')$$
 
-`s` = probability of shooting from zone z, `g` = probability that shot scores, `m` = probability of moving the ball, `T` = 192×192 transition matrix of successful moves.
-The solver iterates from xT = 0 until max |Δ| < 1e-6 (47 iterations). Each action is credited with xT(end) − xT(start). The UI animates the iterations.
+`s` = probability of shooting from zone z, `g` = probability that shot scores, `m` = probability of moving the ball, `T` = 192×192 transition matrix estimated from 645k passes and carries. The solver iterates from xT = 0 until max |Δ| < 1e-6, and the UI animates the iterations. Each action is credited with xT(end) − xT(start).
 Code: `backend/app/analytics/xt.py`
 </details>
 
@@ -166,19 +169,19 @@ Code: `backend/app/analytics/ratings.py`
 </details>
 
 <details>
-<summary><b>Monte Carlo season simulation</b></summary>
+<summary><b>Monte Carlo season simulation and title race</b></summary>
 
-For each remaining fixture, the full 11×11 scoreline matrix is sampled `n_sims` times in a single NumPy call. Points, goal difference and goals scored accumulate as `(n_sims × 20)` matrices and are ranked with one `argsort` that applies the official tie-breakers. The output is a 20×20 finishing-position probability matrix.
+Given a cut-off matchday *k*, models are refitted on matchdays ≤ k. Every later fixture's 11×11 scoreline matrix is then sampled `n_sims` times in one NumPy call. Points, goal difference and goals scored accumulate as `(n_sims × 20)` matrices and are ranked with a single `argsort` that applies the official tie-breakers. The title race repeats this for every k from 5 to 37.
 </details>
 
 <details>
-<summary><b>Live in-play win probability: Bayesian updating</b></summary>
+<summary><b>Live replay: Bayesian in-play win probability</b></summary>
 
-Prior scoring rate λ ~ Gamma(cλ₀, c) from Dixon-Coles. After fraction *t* of the match with live xG *x*:
+Pre-match rates come from Dixon-Coles fitted only on earlier matchdays. The prior is λ ~ Gamma(cλ₀, c). After fraction *t* of the match with live xG *x*:
 
 $$\mathbb{E}[\lambda \mid x] = \frac{c\lambda_0 + x}{c + t}$$
 
-Remaining goals follow Poisson(E[λ]·(1−t)), convolved with the current score to give P(home), P(draw) and P(away). The server recomputes this every simulated minute and pushes it over the WebSocket.
+Remaining goals follow Poisson(E[λ]·(1−t)), convolved with the current score to give P(home), P(draw) and P(away). The server pushes this over the WebSocket every minute of the replay.
 Code: `backend/app/live.py`
 </details>
 
@@ -192,8 +195,7 @@ Code: `backend/app/analytics/network.py`
 <details>
 <summary><b>Scouting: PCA, k-means++ and cosine similarity</b></summary>
 
-14 per-90 features (goals, xG, xG/shot, passes, pass %, progressive passes, xT, box entries, carries, carry %, tackles, interceptions, average depth, ...) are z-scored.
-PCA uses the SVD. k-means++ runs for k = 5…8 with 5 restarts each, and the k with the best silhouette score wins. Each cluster is named from its most distinctive trait relative to its positional group (e.g. *Goal-threat Striker*, *Metronome Midfielder*). The "similar players" list ranks by cosine similarity in standardised space.
+14 per-90 features (goals, xG, xG/shot, passes, pass %, progressive passes, xT, box entries, carries, dribble %, tackles, interceptions, average depth, ...) are z-scored for the 373 players with 600+ minutes. PCA uses the SVD. k-means++ runs for k = 5…8 and the k with the best silhouette score wins. Cluster names come from each centroid's most distinctive trait (e.g. *Goal-threat Striker*, *Screening Midfielder*, *Sweeper Keeper*). Agüero's nearest neighbours by cosine similarity are Kane, Sturridge, Mané and Vardy.
 Code: `backend/app/analytics/scouting.py`
 </details>
 
@@ -206,22 +208,24 @@ Interactive docs at **`/docs`** (Swagger) and **`/redoc`**.
 | Method | Endpoint | Description |
 |---|---|---|
 | GET | `/api/health` | Liveness and pipeline timings |
-| GET | `/api/overview` | KPIs, top scorers, over-performers |
+| GET | `/api/overview` | KPIs, top scorers, over-performers, data source |
 | GET | `/api/league/table` | Standings with xG, xGD, xPts, Elo, form |
 | GET | `/api/league/elo` | Elo history per team |
-| GET | `/api/league/ratings` | Dixon-Coles ratings and ground-truth recovery |
-| GET | `/api/teams/{id}` | Team dossier |
-| GET | `/api/matches?matchday=&team_id=` | Fixtures (played, or upcoming with probabilities) |
+| GET | `/api/league/ratings` | Dixon-Coles ratings |
+| GET | `/api/teams` · `/api/teams/{id}` | Teams and team dossier |
+| GET | `/api/matches?matchday=&team_id=` | Fixtures |
 | GET | `/api/matches/{id}` | Shots, xG race, momentum, both pass networks, "deserved" result |
-| GET | `/api/models/xg` | Coefficients, SEs, calibration, ROC, convergence |
+| GET | `/api/models/xg` | Coefficients, SEs, calibration, ROC, convergence, benchmark |
 | POST | `/api/models/xg/predict` | Score up to 1,000 arbitrary shots |
 | GET | `/api/models/xg/surface` | xG over a pitch grid |
 | GET | `/api/models/xt` | xT grid, components, iteration snapshots, leaders |
 | GET | `/api/predict?home=&away=` | Dixon-Coles / xG-Poisson / Elo / ensemble forecast and score matrix |
-| GET | `/api/simulate/season?n=&model=&seed=` | Monte Carlo season simulation |
+| GET | `/api/simulate/season?n=&model=&as_of=` | Monte Carlo from any matchday, with the actual outcome |
+| GET | `/api/simulate/title-race` | Title / top-4 / relegation odds after every matchday |
 | GET | `/api/models/backtest` | Walk-forward RPS backtest |
+| GET | `/api/models/halfway` | Second-half-of-season prediction test |
 | GET | `/api/players` · `/api/players/map` · `/api/players/{id}` · `/api/players/{id}/similar` | Player stats, scouting map, profile, similarity |
-| WS | `/ws/live?home=&away=&speed=&seed=` | Minute-by-minute live match stream |
+| WS | `/ws/live?match_id=&speed=` | Minute-by-minute match replay |
 
 ```bash
 curl -X POST localhost:8000/api/models/xg/predict \
@@ -238,72 +242,70 @@ git clone https://github.com/ashazzahmed10/football-analytics-dashboard.git && c
 ```
 
 ```bash
-pip install -r backend/requirements-dev.txt
+python3 -m venv .venv && source .venv/bin/activate
 ```
 
 ```bash
-cd backend && uvicorn app.main:app --port 8000
+python -m pip install -r backend/requirements-dev.txt
 ```
-
-Open **http://localhost:8000**. The first start builds the SQLite event database (about 5 s). Later starts reuse it.
-
-**Docker:**
 
 ```bash
-docker build -t pitchiq . && docker run --rm -p 8000:8000 pitchiq
+cd backend && python -m uvicorn app.main:app --port 8000
 ```
 
-**Tests** (20 tests: model correctness, API contracts, WebSocket stream):
+Open **http://localhost:8000**. The Premier League database ships compressed in `backend/data/statsbomb.db.gz` (17 MB) and unpacks automatically on first start, so **no internet is needed at a demo table**.
+
+| Option | Command |
+|---|---|
+| Re-download the season from StatsBomb | `cd backend && python -m app.data.statsbomb --gzip` |
+| Another league (La Liga / Serie A / Ligue 1 2015/16) | `python -m app.data.statsbomb --competition 11 --season 27 --out data/statsbomb.db` |
+| Synthetic league with known ground truth (to prove the estimators are unbiased) | `PITCHIQ_SOURCE=synthetic python -m uvicorn app.main:app` |
+| Docker | `docker build -t pitchiq . && docker run --rm -p 8000:8000 pitchiq` |
+
+**Tests** (25 tests: model correctness, StatsBomb parser, API contracts, WebSocket stream; they run offline on a small synthetic league):
 
 ```bash
 cd backend && python -m pytest -q
 ```
-
-Useful `make` targets: `make install`, `make run`, `make test`, `make rebuild-data`, `make docker`.
 
 ---
 
 ## Project structure
 
 ```
-pitchiq/
-├── backend/
-│   ├── app/
-│   │   ├── main.py              # FastAPI app: routes, middleware, WebSocket, static hosting
-│   │   ├── services.py          # Platform: loads events, trains & caches every model
-│   │   ├── live.py              # WebSocket live match + Bayesian in-play model
-│   │   ├── data/
-│   │   │   ├── engine.py        # Markov-chain match simulator (event generator)
-│   │   │   └── league.py        # League/squad generation, fixtures, SQLite persistence
-│   │   └── analytics/
-│   │       ├── xg.py            # Logistic regression (IRLS), AUC, calibration
-│   │       ├── xt.py            # Expected Threat value iteration
-│   │       ├── ratings.py       # Elo, Dixon-Coles MLE, Monte Carlo, RPS
-│   │       ├── network.py       # PageRank, Brandes betweenness, pass networks
-│   │       └── scouting.py      # PCA (SVD), k-means++, silhouette, similarity
-│   └── tests/                   # pytest: models, API, WebSocket
-├── frontend/
-│   ├── index.html
-│   ├── css/styles.css           # design tokens (light/dark), layout, components
-│   ├── js/app.js                # hash router, theme, status
-│   ├── js/api.js                # fetch cache + latency, WebSocket helper
-│   ├── js/charts.js             # D3 primitives: pitch, line, bars, heatmaps, tooltips
-│   └── js/views/                # one module per page
-├── docs/screenshots/
-├── Dockerfile · Makefile · .github/workflows/ci.yml
+backend/
+├── app/
+│   ├── main.py              # FastAPI app: routes, middleware, WebSocket, static hosting
+│   ├── services.py          # Platform: loads events, trains & caches every model
+│   ├── live.py              # WebSocket match replay + Bayesian in-play model
+│   ├── data/
+│   │   ├── statsbomb.py     # StatsBomb open-data ingestion (parallel, streaming)
+│   │   ├── engine.py        # Synthetic Markov-chain match simulator (ground-truth mode)
+│   │   └── league.py        # Shared SQLite schema, synthetic league generation
+│   └── analytics/
+│       ├── xg.py            # Logistic regression (IRLS), AUC, calibration
+│       ├── xt.py            # Expected Threat value iteration
+│       ├── ratings.py       # Elo, Dixon-Coles MLE, Monte Carlo, RPS
+│       ├── network.py       # PageRank, Brandes betweenness, pass networks
+│       └── scouting.py      # PCA (SVD), k-means++, silhouette, similarity
+├── data/statsbomb.db.gz     # Premier League 2015/16, preprocessed
+└── tests/
+frontend/
+├── index.html · css/styles.css
+└── js/  app.js (router) · api.js · charts.js (D3 primitives) · views/*.js (one per page)
 ```
 
 ---
 
 ## 5-minute demo script (for judges)
 
-1. **Overview**: "260 matches and 356k events, all modelled. The *Luck index* shows which teams' points outrun their chance quality."
-2. **Match Centre**: open a match. Show the shot map, the xG race, and the "deserved result" (10,000 replays of the shots). Then the **pass network**: PageRank and betweenness, both hand-written.
-3. **xG Lab**: click around the pitch to score shots live with a POST request. Show the calibration curve and the 8-iteration IRLS convergence, then point out *"within 1.6% of the theoretical optimum"*.
-4. **Expected Threat**: press *Animate value iteration* and watch value spread backwards from the goal.
-5. **Live Simulator**: kick off a match. Win probability updates every simulated minute over WebSockets, with the Bayesian update shown underneath.
-6. **Season Simulator**: run 50,000 seasons (6 million simulated matches) in about 0.7 s.
-7. **Model Validation**: the walk-forward backtest (no look-ahead) and ground-truth recovery. This is the page that shows the models are *right*, not just pretty.
+1. **Overview**: the real 2015/16 table. The *Luck index* shows Leicester **+16.7 points above their expected points**, the biggest over-performance in the league.
+2. **Season Simulator**: drag *Simulate from matchday* from 10 to 30 and watch Leicester's title odds go from 0.6% to 76%. Then show the **title-race chart**. Every point uses only past matches.
+3. **Match Centre**: open any match. Show the shot map, the xG race, the "deserved result" (10,000 replays of the shots), and the **pass network** with hand-written PageRank and betweenness.
+4. **xG Lab**: click around the pitch to score shots live, then compare against **StatsBomb's professional model**.
+5. **Live Replay**: replay Leicester 3–1 Everton (trophy day) or any match. Win probability updates every minute over WebSockets.
+6. **Model Validation**: the walk-forward backtest and the second-half test, where *xG beats the league table*.
+7. **Scouting Lab**: search Kanté or Vardy and see their role cluster and most similar players.
 8. **Architecture & API**: call any endpoint live and show the `/docs` OpenAPI page.
 
 ---
@@ -311,17 +313,18 @@ pitchiq/
 ## Design decisions & trade-offs
 
 - **From-scratch models:** IRLS, PCA, k-means, PageRank and Brandes are written in NumPy to show the maths. SciPy is used only as a general-purpose optimiser for the 41-parameter Dixon-Coles likelihood.
-- **Train once, serve from memory:** the whole pipeline takes about 2.6 s, so it runs at start-up. Heavy, parameterised results are memoised.
-- **No frontend build step:** ES modules plus a vendored D3 mean the app runs offline on a laptop at a demo table.
-- **Accessible charts:** the categorical palette is checked for colour-vision deficiency, identity is never encoded by colour alone (legends, shapes, labels), and every chart has hover tooltips.
+- **Honest evaluation:** every forecast is fitted only on matches before the ones it predicts. The live replay's prior is fitted on earlier matchdays only.
+- **Two data modes:** real data for credibility, plus a synthetic league whose hidden parameters are known, to verify that the estimators recover the truth.
+- **Train once, serve from memory:** the full model pipeline takes about 5 s at start-up. Heavy, parameterised results are memoised.
+- **No frontend build step:** ES modules plus a vendored D3 mean the app runs offline on a laptop.
+- **Accessible charts:** the categorical palette is checked for colour-vision deficiency, identity is never encoded by colour alone, and every chart has hover tooltips.
+
+## Data & attribution
+
+Event data: **[StatsBomb open data](https://github.com/statsbomb/open-data)**, free for non-commercial use with attribution to StatsBomb. Own goals are not recorded as shots, so goal totals from shots (988) differ slightly from the official table (1,026); the league table uses the official scores.
 
 ## Roadmap
 
-- Adapter for StatsBomb open-data JSON → same event schema
+- Use StatsBomb freeze frames (defender positions) as xG features, to close the gap to the commercial model
 - Possession-value model with gradient-boosted trees (VAEP-style)
-- Player-tracking-free pitch-control approximation from event locations
-- Persist model artefacts and add background re-training jobs
-
----
-
-<sub>All teams and players are fictional and generated by the engine. Built with Python, FastAPI, NumPy, SciPy, pandas, SQLite, D3.js and vanilla JavaScript.</sub>
+- Multi-season support with player tracking across seasons

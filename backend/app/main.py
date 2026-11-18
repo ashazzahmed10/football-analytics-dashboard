@@ -20,18 +20,22 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .live import stream_match
-from .services import Platform
+from .live import stream_replay
+from .services import Platform, resolve_database
 
 ROOT = Path(__file__).resolve().parents[2]
-DB_PATH = Path(os.environ.get("PITCHIQ_DB", ROOT / "backend" / "data" / "pitchiq.db"))
+DATA_DIR = ROOT / "backend" / "data"
+# PITCHIQ_SOURCE=statsbomb (default, real Premier League 2015/16) or synthetic (simulated league).
+# PITCHIQ_DB points at any prepared database and overrides both.
 FRONTEND = ROOT / "frontend"
 STATE: dict = {}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    STATE["platform"] = Platform(DB_PATH)
+    db = Path(os.environ["PITCHIQ_DB"]) if os.environ.get("PITCHIQ_DB") else \
+        resolve_database(DATA_DIR, os.environ.get("PITCHIQ_SOURCE", "statsbomb"))
+    STATE["platform"] = Platform(db)
     yield
     STATE.clear()
 
@@ -178,8 +182,20 @@ def predict(home: int, away: int):
 
 @app.get("/api/simulate/season", tags=["models"], summary="Monte Carlo simulation of the remaining fixtures")
 def simulate(n: int = Query(10000, ge=100, le=50000),
-             model: Literal["dixon_coles", "xg_poisson"] = "dixon_coles", seed: int = 0):
-    return P().season_simulation(n, model, seed)
+             model: Literal["dixon_coles", "xg_poisson"] = "dixon_coles", seed: int = 0,
+             as_of: Optional[int] = Query(None, ge=1, le=60,
+                                          description="Fit on matchdays <= as_of, simulate the rest")):
+    return P().season_simulation(n, model, seed, as_of)
+
+
+@app.get("/api/simulate/title-race", tags=["models"], summary="Title/top-4/relegation odds after every matchday")
+def title_race(model: Literal["dixon_coles", "xg_poisson"] = "xg_poisson"):
+    return P().title_race(model)
+
+
+@app.get("/api/models/halfway", tags=["models"], summary="Predict the second half of the season from the first")
+def halfway(split: Optional[int] = Query(None, ge=4, le=60)):
+    return P().halfway_test(split)
 
 
 @app.get("/api/models/backtest", tags=["models"], summary="Walk-forward backtest (RPS / accuracy / log-loss)")
@@ -216,14 +232,16 @@ def similar(player_id: int, n: int = Query(8, ge=1, le=30)):
 
 # ------------------------------------------------------------------- live
 @app.websocket("/ws/live")
-async def live(ws: WebSocket, home: int, away: int, speed: float = 4.0, seed: Optional[int] = None):
+async def live(ws: WebSocket, match_id: int, speed: float = 4.0):
+    """Replay a played match minute by minute with the in-play win-probability model."""
     await ws.accept()
-    if home not in P().teams.index or away not in P().teams.index or home == away:
-        await ws.send_json({"type": "error", "detail": "invalid teams"})
+    p = P()
+    if match_id not in p.matches.index or not p.matches.loc[match_id, "played"]:
+        await ws.send_json({"type": "error", "detail": "unknown or unplayed match"})
         await ws.close()
         return
     try:
-        await stream_match(ws, P(), home, away, min(max(speed, 0.5), 60.0), seed)
+        await stream_replay(ws, p, match_id, min(max(speed, 0.5), 60.0))
         await ws.close()
     except WebSocketDisconnect:
         pass

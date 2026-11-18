@@ -22,7 +22,7 @@ export async function render(el, [matchId]) {
     const box = el.querySelector("#mlist");
     box.innerHTML = list.map((m) => `<div class="match-item" data-id="${m.id}">
       <span class="h">${m.home}</span><span class="sc">${m.home_goals} – ${m.away_goals}</span><span class="a">${m.away}</span>
-      <span class="xg">xG ${m.home_xg.toFixed(2)} – ${m.away_xg.toFixed(2)}</span></div>`).join("");
+      <span class="xg">${m.date ? `${m.date} · ` : ""}xG ${m.home_xg.toFixed(2)} – ${m.away_xg.toFixed(2)}</span></div>`).join("");
     box.querySelectorAll(".match-item").forEach((it) => it.addEventListener("click", () => { location.hash = `#/matches/${it.dataset.id}`; }));
     if (selectFirst && list.length) show(list[0].id);
   };

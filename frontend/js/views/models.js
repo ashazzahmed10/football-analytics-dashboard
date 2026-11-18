@@ -7,6 +7,8 @@ const NAMES = { ensemble: "Ensemble", xg_poisson: "xG-Poisson", dixon_coles: "Di
 export async function render(el) {
   loading(el, "Running walk-forward backtest (refits every model for each matchday)…");
   const [bt, rt] = await Promise.all([api("/api/models/backtest"), api("/api/league/ratings")]);
+  const real = !rt.truth_recovery;
+  const hw = real ? await api("/api/models/halfway") : null;
   const S = bt.summary;
   const order = Object.keys(S).sort((a, b) => S[a].rps - S[b].rps);
   const colors = { ensemble: css("--series-1"), xg_poisson: css("--series-3"), dixon_coles: css("--series-2"), elo: css("--series-7"), uniform: css("--neutral") };
@@ -24,10 +26,17 @@ export async function render(el) {
         <div class="chart" id="cum"></div>${legendHTML(order.map((k) => ({ label: NAMES[k], color: colors[k] })), { line: true })}</div>
     </div>
     <div class="grid g-2">
-      <div class="card"><div class="card-head"><div><h3 class="card-title">Ground-truth recovery</h3>
+      ${real ? `<div class="card"><div class="card-head"><div><h3 class="card-title">Predicting the second half of the season</h3>
+        <div class="card-sub">Models fitted on matchdays 1–${hw.split} only · predicted vs actual points over the remaining ${hw.games_after} matches</div></div></div>
+        <div class="chart" id="half"></div>${legendHTML([{ label: "xG-Poisson model", color: css("--series-3") }, { label: "League table (points per game)", color: css("--series-2") }])}
+        <table class="data" style="margin-top:12px"><thead><tr><th>Method</th><th>Mean abs. error ↓</th><th>Correlation r ↑</th></tr></thead><tbody>
+        ${[["xg_poisson", "xG-Poisson ratings"], ["dixon_coles", "Dixon-Coles (goals)"], ["table_ppg", "League table (PPG × games left)"]].map(([k, n]) =>
+          `<tr><td>${n}</td><td>${hw.summary[k].mae.toFixed(2)} pts</td><td>${hw.summary[k].r.toFixed(3)}</td></tr>`).join("")}</tbody></table>
+        <div class="card-note">The table rewards past results; xG measures the chances teams <i>create and concede</i>, which is more stable.
+          That is why analysts trust xG over the table for forecasting.</div></div>` : `<div class="card"><div class="card-head"><div><h3 class="card-title">Ground-truth recovery</h3>
         <div class="card-sub">Fitted attack rating vs the simulator's hidden true attack strength</div></div><div class="seg" id="dim"><button data-k="attack" class="on">Attack</button><button data-k="defence">Defence</button></div></div>
         <div class="chart" id="truth"></div>${legendHTML([{ label: "Goals model", color: css("--series-2") }, { label: "xG model", color: css("--series-3") }])}
-        <div class="card-note" id="truth-note"></div></div>
+        <div class="card-note" id="truth-note"></div></div>`}
       <div class="card"><div class="card-head"><div><h3 class="card-title">Fitted team strengths (Dixon-Coles)</h3><div class="card-sub">attack + defence · log-goal scale</div></div></div>
         <div class="chart" id="strength"></div>
         <div class="kv" style="margin-top:14px">
@@ -48,6 +57,8 @@ export async function render(el) {
 
   let dim = "attack";
   const tEl = el.querySelector("#truth");
+  const half = el.querySelector("#half");
+  if (half) ros.push(responsive(half, () => halfScatter(half, hw)));
   const drawTruth = () => {
     const r = rt.truth_recovery;
     el.querySelector("#truth-note").innerHTML = `Pearson r — goals model: <b>${r.goals_model[`${dim}_r`]}</b> · xG model: <b>${r.xg_model[`${dim}_r`]}</b>.
@@ -57,11 +68,34 @@ export async function render(el) {
   el.querySelectorAll("#dim button").forEach((b) => b.addEventListener("click", () => {
     dim = b.dataset.k; el.querySelectorAll("#dim button").forEach((x) => x.classList.toggle("on", x === b)); drawTruth();
   }));
-  ros.push(responsive(tEl, drawTruth));
+  if (tEl) ros.push(responsive(tEl, drawTruth));
   const st = el.querySelector("#strength");
   ros.push(responsive(st, () => hBars(st, { data: [...rt.teams].sort((a, b) => b.attack + b.defence - a.attack - a.defence), value: (t) => t.attack + t.defence,
     label: (t) => t.name, labelW: 150, rowH: 21, diverging: true, color: (t) => (t.attack + t.defence >= 0 ? css("--series-1") : css("--series-2")), format: (v) => fmt.signed(v, 2) })));
   return () => ros.forEach((r) => r.disconnect());
+}
+
+function halfScatter(container, hw) {
+  const el = d3.select(container);
+  el.selectAll("*").remove();
+  const W = Math.max(container.clientWidth, 300), H = 300, m = { t: 12, r: 14, b: 38, l: 46 };
+  const svg = el.append("svg").attr("viewBox", `0 0 ${W} ${H}`);
+  const vals = hw.teams.flatMap((t) => [t.actual, t.xg_poisson, t.table_ppg]);
+  const ext = [Math.floor(d3.min(vals) / 5) * 5, Math.ceil(d3.max(vals) / 5) * 5];
+  const x = d3.scaleLinear().domain(ext).range([m.l, W - m.r]);
+  const y = d3.scaleLinear().domain(ext).range([H - m.b, m.t]);
+  svg.append("g").attr("class", "gridline").attr("transform", `translate(${m.l},0)`).call(d3.axisLeft(y).ticks(5).tickSize(-(W - m.l - m.r)).tickFormat(""));
+  svg.append("g").attr("class", "axis").attr("transform", `translate(0,${H - m.b})`).call(d3.axisBottom(x).ticks(6).tickSizeOuter(0));
+  svg.append("g").attr("class", "axis").attr("transform", `translate(${m.l},0)`).call(d3.axisLeft(y).ticks(5).tickSize(0).tickPadding(6)).select(".domain").remove();
+  svg.append("line").attr("x1", x(ext[0])).attr("y1", y(ext[0])).attr("x2", x(ext[1])).attr("y2", y(ext[1])).attr("stroke", css("--axis")).attr("stroke-dasharray", "4 4");
+  svg.append("text").attr("class", "axis-title").attr("x", W - m.r).attr("y", H - 6).attr("text-anchor", "end").text("Predicted points (2nd half)");
+  svg.append("text").attr("class", "axis-title").attr("x", m.l - 40).attr("y", m.t - 2).text("Actual");
+  for (const [key, color, shape] of [["table_ppg", css("--series-2"), d3.symbolCircle], ["xg_poisson", css("--series-3"), d3.symbolDiamond]]) {
+    svg.selectAll(null).data(hw.teams).join("path").attr("d", d3.symbol(shape, 70)).attr("transform", (t) => `translate(${x(t[key])},${y(t.actual)})`)
+      .attr("fill", color).attr("stroke", css("--surface-1")).attr("stroke-width", 1.5)
+      .on("mousemove", (e, t) => showTip(e, tipRows(t.name, [["Actual", t.actual], ["xG model", t.xg_poisson.toFixed(1)], ["Table PPG", t.table_ppg.toFixed(1)], ["Dixon-Coles", t.dixon_coles.toFixed(1)]])))
+      .on("mouseleave", hideTip);
+  }
 }
 
 function scatter(container, teams, dim) {

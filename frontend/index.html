@@ -18,14 +18,14 @@
         <div class="brand-mark">IQ</div>
         <div>
           <div class="brand-name">PitchIQ</div>
-          <div class="brand-sub">Football analytics engine</div>
+          <div class="brand-sub" id="brand-sub">Football analytics engine</div>
         </div>
       </div>
       <nav class="nav" id="nav">
         <div class="nav-label">League</div>
         <a href="#/overview" data-route="overview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Overview</a>
         <a href="#/matches" data-route="matches"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="12" y1="5" x2="12" y2="19"/><circle cx="12" cy="12" r="3"/></svg>Match Centre</a>
-        <a href="#/live" data-route="live"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8a6 6 0 0 1 0 8.4M7.8 16.2a6 6 0 0 1 0-8.4M19.1 4.9a10 10 0 0 1 0 14.2M4.9 19.1a10 10 0 0 1 0-14.2"/></svg>Live Simulator</a>
+        <a href="#/live" data-route="live"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8a6 6 0 0 1 0 8.4M7.8 16.2a6 6 0 0 1 0-8.4M19.1 4.9a10 10 0 0 1 0 14.2M4.9 19.1a10 10 0 0 1 0-14.2"/></svg>Live Replay</a>
         <div class="nav-label">Models</div>
         <a href="#/xg" data-route="xg"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>xG Lab</a>
         <a href="#/xt" data-route="xt"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>Expected Threat</a>
@@ -41,6 +41,7 @@
         <div><span class="status-dot"></span><span id="api-status">Connecting…</span></div>
         <div id="api-latency" class="mono">–</div>
         <a href="/docs" target="_blank" rel="noopener">OpenAPI docs ↗</a>
+        <div id="attribution" style="font-size:11px;line-height:1.4"></div>
       </div>
     </aside>
     <main class="main">

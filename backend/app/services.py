@@ -9,6 +9,8 @@ Pipeline (runs in ~3-5 s):
 """
 from __future__ import annotations
 
+from typing import Optional
+
 import sqlite3
 import time
 from functools import lru_cache
@@ -305,7 +307,7 @@ class Platform:
             row.update(prob_home=round(float(p[0]), 3), prob_draw=round(float(p[1]), 3), prob_away=round(float(p[2]), 3))
         return row
 
-    def match_list(self, matchday: int | None = None, team_id: int | None = None):
+    def match_list(self, matchday: Optional[int] = None, team_id: Optional[int] = None):
         df = self.matches
         if matchday:
             df = df[df.matchday == matchday]

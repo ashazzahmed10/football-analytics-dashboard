@@ -16,6 +16,8 @@ convolution of the current score with the remaining-goal distributions.
 """
 from __future__ import annotations
 
+from typing import Optional
+
 import asyncio
 import random
 import sqlite3
@@ -42,7 +44,7 @@ def in_play_probs(score_h, score_a, lam_h, lam_a, xg_h, xg_a, t):
             "away": float(M[diff < 0].sum()), "rate_home": rate_h, "rate_away": rate_a}
 
 
-async def stream_match(ws, platform, home: int, away: int, speed: float = 4.0, seed: int | None = None):
+async def stream_match(ws, platform, home: int, away: int, speed: float = 4.0, seed: Optional[int] = None):
     """speed = simulated match-minutes per real second."""
     rng = random.Random(seed if seed is not None else random.randrange(1 << 30))
     con = sqlite3.connect(platform.db_path)

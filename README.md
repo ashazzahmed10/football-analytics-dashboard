@@ -6,7 +6,7 @@
 
 Expected Goals · Expected Threat · Dixon-Coles · Elo · Monte Carlo · Pass-Network Graphs · PCA / k-means Scouting · Live WebSocket Win Probability
 
-![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-async%20REST%20%2B%20WebSocket-009688?logo=fastapi&logoColor=white)
 ![NumPy](https://img.shields.io/badge/NumPy-models%20from%20scratch-013243?logo=numpy&logoColor=white)
 ![D3.js](https://img.shields.io/badge/D3.js-v7-F9A03C?logo=d3dotjs&logoColor=white)

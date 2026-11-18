@@ -11,7 +11,7 @@ import time
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Literal
+from typing import Optional, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -120,7 +120,7 @@ def team(team_id: int):
 
 # ---------------------------------------------------------------- matches
 @app.get("/api/matches", tags=["matches"])
-def matches(matchday: int | None = Query(None, ge=1, le=38), team_id: int | None = None):
+def matches(matchday: Optional[int] = Query(None, ge=1, le=38), team_id: Optional[int] = None):
     return P().match_list(matchday, team_id)
 
 
@@ -189,7 +189,7 @@ def backtest():
 
 # ---------------------------------------------------------------- players
 @app.get("/api/players", tags=["players"])
-def players(team_id: int | None = None, position: str | None = None,
+def players(team_id: Optional[int] = None, position: Optional[str] = None,
             min_minutes: int = Query(0, ge=0), sort: str = "xt_p90", limit: int = Query(500, le=1000)):
     return P().player_list(team_id, position, min_minutes, sort, limit)
 
@@ -216,7 +216,7 @@ def similar(player_id: int, n: int = Query(8, ge=1, le=30)):
 
 # ------------------------------------------------------------------- live
 @app.websocket("/ws/live")
-async def live(ws: WebSocket, home: int, away: int, speed: float = 4.0, seed: int | None = None):
+async def live(ws: WebSocket, home: int, away: int, speed: float = 4.0, seed: Optional[int] = None):
     await ws.accept()
     if home not in P().teams.index or away not in P().teams.index or home == away:
         await ws.send_json({"type": "error", "detail": "invalid teams"})

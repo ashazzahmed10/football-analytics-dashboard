@@ -19,7 +19,7 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass, field
-from typing import Iterator
+from typing import Optional, Iterator
 
 PITCH_X, PITCH_Y = 120.0, 80.0
 GOAL_X, GOAL_Y = 120.0, 40.0
@@ -95,14 +95,14 @@ class MatchEvent:
     type: str                 # pass | carry | shot | interception | tackle
     x: float
     y: float
-    end_x: float | None = None
-    end_y: float | None = None
+    end_x: Optional[float] = None
+    end_y: Optional[float] = None
     outcome: str = "success"  # success | fail | goal | saved | off_target | blocked
-    receiver_id: int | None = None
+    receiver_id: Optional[int] = None
     possession: int = 0
-    body_part: str | None = None
-    situation: str | None = None
-    true_xg: float | None = None
+    body_part: Optional[str] = None
+    situation: Optional[str] = None
+    true_xg: Optional[float] = None
 
     @property
     def minute(self) -> int:

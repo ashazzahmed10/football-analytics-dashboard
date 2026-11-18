@@ -60,3 +60,9 @@ def test_websocket_live(client):
             p = msg["probs"]
             assert abs(p["home"] + p["draw"] + p["away"] - 1) < 1e-6
         assert last["minute"] >= 90
+
+
+def test_stale_service_worker_kill_switch(client):
+    r = client.get("/sw.js")
+    assert r.status_code == 200 and "unregister" in r.text
+    assert r.headers["content-type"].startswith("application/javascript")

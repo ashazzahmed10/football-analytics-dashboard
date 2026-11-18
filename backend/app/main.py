@@ -16,7 +16,7 @@ from typing import Optional, Literal
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -236,3 +236,25 @@ if FRONTEND.exists():
     @app.get("/", include_in_schema=False)
     def index():
         return FileResponse(FRONTEND / "index.html")
+
+
+# A service worker left behind by another app on the same localhost port keeps serving
+# that app's cached pages. Browsers re-fetch /sw.js to update it, so we answer with a
+# "kill switch" worker that wipes its caches, unregisters itself and reloads the tabs.
+KILL_SWITCH_SW = """
+self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', (event) => {
+  event.waitUntil((async () => {
+    for (const key of await caches.keys()) await caches.delete(key);
+    await self.registration.unregister();
+    for (const client of await self.clients.matchAll({ type: 'window' })) client.navigate(client.url);
+  })());
+});
+"""
+
+
+@app.get("/sw.js", include_in_schema=False)
+@app.get("/service-worker.js", include_in_schema=False)
+def kill_stale_service_worker():
+    return Response(KILL_SWITCH_SW, media_type="application/javascript",
+                    headers={"Cache-Control": "no-store", "Clear-Site-Data": '"cache", "storage"'})
